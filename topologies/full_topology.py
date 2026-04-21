@@ -19,8 +19,8 @@ IP Plan:
   P-P links:   10.0.1x.0/30
   PE-P links:  10.0.2x.0/30
   Branch1 LAN: 10.1.0.0/24
-  Branch2 LANs: 10.2.x.0/24
-  Branch3 LANs: 10.3.x.0/24
+  Branch2 LANs: 10.2.x.0/24  (GW: 10.2.10.1 / 10.2.20.1 / 10.2.30.1)
+  Branch3 LANs: 10.3.x.0/24  (GW: 10.3.0.1/16)
 """
 
 import sys
@@ -78,21 +78,23 @@ def build_full_topology():
     ce03 = net.addHost('ce03', cls=LinuxRouter, ip=None)
 
     info('*** Tạo Branch 1 - Flat Network\n')
-    sw01 = net.addSwitch('sw01')
-    sw02 = net.addSwitch('sw02')
+    # FIX 1: failMode='standalone' để switch hoạt động không cần controller
+    sw01 = net.addSwitch('sw01', failMode='standalone')
+    sw02 = net.addSwitch('sw02', failMode='standalone')
     pc01 = net.addHost('pc01', ip='10.1.0.11/24', defaultRoute='via 10.1.0.1')
     pc02 = net.addHost('pc02', ip='10.1.0.12/24', defaultRoute='via 10.1.0.1')
     pc03 = net.addHost('pc03', ip='10.1.0.13/24', defaultRoute='via 10.1.0.1')
     pc04 = net.addHost('pc04', ip='10.1.0.14/24', defaultRoute='via 10.1.0.1')
 
     info('*** Tạo Branch 2 - Three-Tier Network\n')
-    core01 = net.addSwitch('core01')
-    core02 = net.addSwitch('core02')
-    dist01 = net.addSwitch('dist01')
-    dist02 = net.addSwitch('dist02')
-    access01 = net.addSwitch('access01')
-    access02 = net.addSwitch('access02')
-    access03 = net.addSwitch('access03')
+    # FIX 1: failMode='standalone' cho tất cả switches Branch 2
+    core01  = net.addSwitch('core01',  failMode='standalone')
+    core02  = net.addSwitch('core02',  failMode='standalone')
+    dist01  = net.addSwitch('dist01',  failMode='standalone')
+    dist02  = net.addSwitch('dist02',  failMode='standalone')
+    access01 = net.addSwitch('access01', failMode='standalone')
+    access02 = net.addSwitch('access02', failMode='standalone')
+    access03 = net.addSwitch('access03', failMode='standalone')
     lab01   = net.addHost('lab01',   ip='10.2.10.11/24', defaultRoute='via 10.2.10.1')
     lab02   = net.addHost('lab02',   ip='10.2.10.12/24', defaultRoute='via 10.2.10.1')
     admin01 = net.addHost('admin01', ip='10.2.20.11/24', defaultRoute='via 10.2.20.1')
@@ -101,18 +103,20 @@ def build_full_topology():
     guest02 = net.addHost('guest02', ip='10.2.30.12/24', defaultRoute='via 10.2.30.1')
 
     info('*** Tạo Branch 3 - Spine-Leaf (Data Center)\n')
-    spine01 = net.addSwitch('spine01')
-    spine02 = net.addSwitch('spine02')
-    leaf01  = net.addSwitch('leaf01')
-    leaf02  = net.addSwitch('leaf02')
-    leaf03  = net.addSwitch('leaf03')
-    leaf04  = net.addSwitch('leaf04')
-    web01 = net.addHost('web01', ip='10.3.10.11/24', defaultRoute='via 10.3.10.1')
-    web02 = net.addHost('web02', ip='10.3.10.12/24', defaultRoute='via 10.3.10.1')
-    dns01 = net.addHost('dns01', ip='10.3.20.11/24', defaultRoute='via 10.3.20.1')
-    dns02 = net.addHost('dns02', ip='10.3.20.12/24', defaultRoute='via 10.3.20.1')
-    db01  = net.addHost('db01',  ip='10.3.30.11/24', defaultRoute='via 10.3.30.1')
-    db02  = net.addHost('db02',  ip='10.3.30.12/24', defaultRoute='via 10.3.30.1')
+    # FIX 1: failMode='standalone' cho tất cả switches Branch 3
+    spine01 = net.addSwitch('spine01', failMode='standalone')
+    spine02 = net.addSwitch('spine02', failMode='standalone')
+    leaf01  = net.addSwitch('leaf01',  failMode='standalone')
+    leaf02  = net.addSwitch('leaf02',  failMode='standalone')
+    leaf03  = net.addSwitch('leaf03',  failMode='standalone')
+    leaf04  = net.addSwitch('leaf04',  failMode='standalone')
+    # FIX 3: Hosts Branch3 dùng /16 với gateway 10.3.0.1
+    web01 = net.addHost('web01', ip='10.3.10.11/16', defaultRoute='via 10.3.0.1')
+    web02 = net.addHost('web02', ip='10.3.10.12/16', defaultRoute='via 10.3.0.1')
+    dns01 = net.addHost('dns01', ip='10.3.20.11/16', defaultRoute='via 10.3.0.1')
+    dns02 = net.addHost('dns02', ip='10.3.20.12/16', defaultRoute='via 10.3.0.1')
+    db01  = net.addHost('db01',  ip='10.3.30.11/16', defaultRoute='via 10.3.0.1')
+    db02  = net.addHost('db02',  ip='10.3.30.12/16', defaultRoute='via 10.3.0.1')
 
     # ================================================================
     # LINKS - MPLS BACKBONE
@@ -179,6 +183,9 @@ def build_full_topology():
                 intfName1='ce02-c01')
     net.addLink(ce02, core02, bw=1000, delay='1ms',
                 intfName1='ce02-c02')
+    # FIX 2: Thêm link riêng ce02 -> dist02 cho GUEST subnet gateway
+    net.addLink(ce02, dist02, bw=100, delay='1ms',
+                intfName1='ce02-c03')
     net.addLink(core01, core02, bw=1000, delay='1ms')
     net.addLink(core01, dist01, bw=1000, delay='1ms')
     net.addLink(core01, dist02, bw=1000, delay='1ms')
@@ -290,12 +297,13 @@ def configure_ip_addresses(net):
     net.get('ce01').cmd('ip addr add 10.1.0.1/24 dev ce01-sw01')
 
     # ---- CE02 -> Branch2 (Inter-VLAN Gateway) ----
+    # FIX 2: 3 interfaces riêng biệt cho 3 VLAN
     net.get('ce02').cmd('ip addr add 10.2.10.1/24 dev ce02-c01')  # LAB GW
     net.get('ce02').cmd('ip addr add 10.2.20.1/24 dev ce02-c02')  # ADMIN GW
-    # GUEST trên sub-interface
-    net.get('ce02').cmd('ip addr add 10.2.30.1/24 dev ce02-c01:0 2>/dev/null || true')
+    net.get('ce02').cmd('ip addr add 10.2.30.1/24 dev ce02-c03')  # GUEST GW (link mới)
 
     # ---- CE03 -> Branch3 (Border Leaf) ----
+    # FIX 3: Giữ 10.3.0.1/16 – hosts đã dùng /16 nên on-link reachable
     net.get('ce03').cmd('ip addr add 10.3.0.1/16 dev ce03-leaf01')
 
     info('*** Cấu hình IP hoàn tất\n')
@@ -308,59 +316,103 @@ def configure_routing(net):
     """
     info('*** Cấu hình Static Routes\n')
 
-    # CE01 default route -> PE01
+    # ================================================================
+    # CE routes (default route -> PE)
+    # ================================================================
     net.get('ce01').cmd('ip route add default via 10.100.1.1')
-    # CE02 default route -> PE02
     net.get('ce02').cmd('ip route add default via 10.100.2.1')
-    # CE03 default route -> PE03
     net.get('ce03').cmd('ip route add default via 10.100.3.1')
 
-    # PE01: routes to Branch2/3 via Backbone
-    net.get('pe01').cmd('ip route add 10.2.0.0/16 via 10.0.21.2')  # via P02
-    net.get('pe01').cmd('ip route add 10.3.0.0/16 via 10.0.21.2')
-    net.get('pe01').cmd('ip route add 10.100.2.0/30 via 10.0.21.2')
-    net.get('pe01').cmd('ip route add 10.100.3.0/30 via 10.0.20.2')
+    # ================================================================
+    # PE01 routes
+    # Interfaces: pe01-p01 (10.0.20.1), pe01-p02 (10.0.21.1),
+    #             pe01-ce01 (10.100.1.1)
+    # Neighbors: P01 via 10.0.20.2, P02 via 10.0.21.2, CE01 via 10.100.1.2
+    # ================================================================
+    # FIX 5: Thêm route về Branch1 của chính mình qua ce01
+    net.get('pe01').cmd('ip route add 10.1.0.0/24   via 10.100.1.2')    # -> CE01 -> Branch1
+    # Routes về Branch2 và Branch3 qua backbone (via P02 là relay tốt nhất)
+    net.get('pe01').cmd('ip route add 10.2.0.0/16   via 10.0.21.2')     # via P02 -> PE02
+    net.get('pe01').cmd('ip route add 10.3.0.0/16   via 10.0.21.2')     # via P02 -> PE03
+    net.get('pe01').cmd('ip route add 10.100.2.0/30 via 10.0.21.2')     # PE02-CE02 link
+    # FIX 5: Đổi next-hop của 10.100.3 sang via P02 (P01 không nối trực tiếp P04)
+    net.get('pe01').cmd('ip route add 10.100.3.0/30 via 10.0.21.2')     # via P02 -> P03 -> PE03
 
-    # PE02: routes to Branch1/3
-    net.get('pe02').cmd('ip route add 10.1.0.0/24 via 10.0.22.2')
-    net.get('pe02').cmd('ip route add 10.3.0.0/16 via 10.0.23.2')
-    net.get('pe02').cmd('ip route add 10.100.1.0/30 via 10.0.22.2')
-    net.get('pe02').cmd('ip route add 10.100.3.0/30 via 10.0.23.2')
+    # ================================================================
+    # PE02 routes
+    # Interfaces: pe02-p02 (10.0.22.1), pe02-p03 (10.0.23.1),
+    #             pe02-ce02 (10.100.2.1)
+    # Neighbors: P02 via 10.0.22.2, P03 via 10.0.23.2, CE02 via 10.100.2.2
+    # ================================================================
+    net.get('pe02').cmd('ip route add 10.2.0.0/16   via 10.100.2.2')    # -> CE02 -> Branch2
+    net.get('pe02').cmd('ip route add 10.1.0.0/24   via 10.0.22.2')     # via P02 -> PE01
+    net.get('pe02').cmd('ip route add 10.3.0.0/16   via 10.0.23.2')     # via P03 -> PE03
+    net.get('pe02').cmd('ip route add 10.100.1.0/30 via 10.0.22.2')     # PE01-CE01 link
+    net.get('pe02').cmd('ip route add 10.100.3.0/30 via 10.0.23.2')     # PE03-CE03 link
 
-    # PE03: routes to Branch1/2
-    net.get('pe03').cmd('ip route add 10.1.0.0/24 via 10.0.24.2')
-    net.get('pe03').cmd('ip route add 10.2.0.0/16 via 10.0.24.2')
-    net.get('pe03').cmd('ip route add 10.100.1.0/30 via 10.0.25.2')
-    net.get('pe03').cmd('ip route add 10.100.2.0/30 via 10.0.24.2')
+    # ================================================================
+    # PE03 routes
+    # Interfaces: pe03-p03 (10.0.24.1), pe03-p04 (10.0.25.1),
+    #             pe03-ce03 (10.100.3.1)
+    # Neighbors: P03 via 10.0.24.2, P04 via 10.0.25.2, CE03 via 10.100.3.2
+    # ================================================================
+    net.get('pe03').cmd('ip route add 10.3.0.0/16   via 10.100.3.2')    # -> CE03 -> Branch3
+    net.get('pe03').cmd('ip route add 10.1.0.0/24   via 10.0.24.2')     # via P03 -> P02 -> PE01
+    net.get('pe03').cmd('ip route add 10.2.0.0/16   via 10.0.24.2')     # via P03 -> PE02
+    net.get('pe03').cmd('ip route add 10.100.1.0/30 via 10.0.24.2')     # PE01-CE01 link
+    net.get('pe03').cmd('ip route add 10.100.2.0/30 via 10.0.24.2')     # PE02-CE02 link
 
-    # P01: forward traffic
-    net.get('p01').cmd('ip route add 10.100.1.0/30 via 10.0.20.1')
-    net.get('p01').cmd('ip route add 10.100.2.0/30 via 10.0.10.2')
-    net.get('p01').cmd('ip route add 10.100.3.0/30 via 10.0.10.2')
-    net.get('p01').cmd('ip route add 10.2.0.0/16   via 10.0.21.1')
-    net.get('p01').cmd('ip route add 10.3.0.0/16   via 10.0.10.2')
-    net.get('p01').cmd('ip route add 10.1.0.0/24   via 10.0.20.1')
+    # ================================================================
+    # P01 routes
+    # Interfaces: p01-eth0 (10.0.10.1 -> P02), p01-eth1 (10.0.13.1 -> P03),
+    #             p01-pe01 (10.0.20.2 -> PE01)
+    # ================================================================
+    net.get('p01').cmd('ip route add 10.1.0.0/24   via 10.0.20.1')     # -> PE01 -> CE01
+    net.get('p01').cmd('ip route add 10.100.1.0/30 via 10.0.20.1')     # PE01-CE01 link
+    # FIX 5: 10.2.0.0/16 via P02 (10.0.10.2), không phải 10.0.21.1
+    net.get('p01').cmd('ip route add 10.2.0.0/16   via 10.0.10.2')     # -> P02 -> PE02
+    net.get('p01').cmd('ip route add 10.100.2.0/30 via 10.0.10.2')     # via P02 -> PE02
+    # FIX 5: 10.3.0.0/16 via P03 (10.0.13.2) - đường ngắn nhất
+    net.get('p01').cmd('ip route add 10.3.0.0/16   via 10.0.13.2')     # -> P03 -> PE03
+    net.get('p01').cmd('ip route add 10.100.3.0/30 via 10.0.13.2')     # via P03 -> PE03
 
-    net.get('p02').cmd('ip route add 10.100.1.0/30 via 10.0.10.1')
-    net.get('p02').cmd('ip route add 10.100.2.0/30 via 10.0.22.1')
-    net.get('p02').cmd('ip route add 10.100.3.0/30 via 10.0.11.2')
-    net.get('p02').cmd('ip route add 10.1.0.0/24   via 10.0.21.1')
-    net.get('p02').cmd('ip route add 10.2.0.0/16   via 10.0.22.1')
-    net.get('p02').cmd('ip route add 10.3.0.0/16   via 10.0.11.2')
+    # ================================================================
+    # P02 routes
+    # Interfaces: p02-eth0 (10.0.10.2 -> P01), p02-eth1 (10.0.11.1 -> P03),
+    #             p02-eth2 (10.0.14.1 -> P04), p02-pe01 (10.0.21.2 -> PE01),
+    #             p02-pe02 (10.0.22.2 -> PE02)
+    # ================================================================
+    net.get('p02').cmd('ip route add 10.1.0.0/24   via 10.0.21.1')     # -> PE01 -> CE01
+    net.get('p02').cmd('ip route add 10.100.1.0/30 via 10.0.21.1')     # PE01-CE01 link
+    net.get('p02').cmd('ip route add 10.2.0.0/16   via 10.0.22.1')     # -> PE02 -> CE02
+    net.get('p02').cmd('ip route add 10.100.2.0/30 via 10.0.22.1')     # PE02-CE02 link
+    net.get('p02').cmd('ip route add 10.3.0.0/16   via 10.0.11.2')     # -> P03 -> PE03
+    net.get('p02').cmd('ip route add 10.100.3.0/30 via 10.0.11.2')     # via P03 -> PE03
 
-    net.get('p03').cmd('ip route add 10.100.1.0/30 via 10.0.11.1')
-    net.get('p03').cmd('ip route add 10.100.2.0/30 via 10.0.23.1')
-    net.get('p03').cmd('ip route add 10.100.3.0/30 via 10.0.24.1')
-    net.get('p03').cmd('ip route add 10.1.0.0/24   via 10.0.11.1')
-    net.get('p03').cmd('ip route add 10.2.0.0/16   via 10.0.23.1')
-    net.get('p03').cmd('ip route add 10.3.0.0/16   via 10.0.24.1')
+    # ================================================================
+    # P03 routes
+    # Interfaces: p03-eth0 (10.0.11.2 -> P02), p03-eth1 (10.0.12.1 -> P04),
+    #             p03-eth2 (10.0.13.2 -> P01), p03-pe02 (10.0.23.2 -> PE02),
+    #             p03-pe03 (10.0.24.2 -> PE03)
+    # ================================================================
+    net.get('p03').cmd('ip route add 10.1.0.0/24   via 10.0.11.1')     # -> P02 -> PE01
+    net.get('p03').cmd('ip route add 10.100.1.0/30 via 10.0.11.1')     # via P02 -> PE01
+    net.get('p03').cmd('ip route add 10.2.0.0/16   via 10.0.23.1')     # -> PE02 -> CE02
+    net.get('p03').cmd('ip route add 10.100.2.0/30 via 10.0.23.1')     # PE02-CE02 link
+    net.get('p03').cmd('ip route add 10.3.0.0/16   via 10.0.24.1')     # -> PE03 -> CE03
+    net.get('p03').cmd('ip route add 10.100.3.0/30 via 10.0.24.1')     # PE03-CE03 link
 
-    net.get('p04').cmd('ip route add 10.100.1.0/30 via 10.0.14.1')
-    net.get('p04').cmd('ip route add 10.100.2.0/30 via 10.0.12.1')
-    net.get('p04').cmd('ip route add 10.100.3.0/30 via 10.0.25.1')
-    net.get('p04').cmd('ip route add 10.1.0.0/24   via 10.0.14.1')
-    net.get('p04').cmd('ip route add 10.2.0.0/16   via 10.0.12.1')
-    net.get('p04').cmd('ip route add 10.3.0.0/16   via 10.0.25.1')
+    # ================================================================
+    # P04 routes
+    # Interfaces: p04-eth0 (10.0.12.2 -> P03), p04-eth1 (10.0.14.2 -> P02),
+    #             p04-pe03 (10.0.25.2 -> PE03)
+    # ================================================================
+    net.get('p04').cmd('ip route add 10.1.0.0/24   via 10.0.14.1')     # -> P02 -> PE01
+    net.get('p04').cmd('ip route add 10.100.1.0/30 via 10.0.14.1')     # via P02 -> PE01
+    net.get('p04').cmd('ip route add 10.2.0.0/16   via 10.0.12.1')     # -> P03 -> PE02
+    net.get('p04').cmd('ip route add 10.100.2.0/30 via 10.0.12.1')     # via P03 -> PE02
+    net.get('p04').cmd('ip route add 10.3.0.0/16   via 10.0.25.1')     # -> PE03 -> CE03
+    net.get('p04').cmd('ip route add 10.100.3.0/30 via 10.0.25.1')     # PE03-CE03 link
 
     info('*** Routing cấu hình hoàn tất\n')
 
