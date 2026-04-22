@@ -1,33 +1,77 @@
-# Metro Ethernet MPLS - Mô Phỏng Đa Chi Nhánh
+# Metro Ethernet MPLS — Mô Phỏng Đa Chi Nhánh
 
-> **Đề tài:** Thiết kế và triển khai mạng Metro Ethernet sử dụng MPLS cho kết nối đa chi nhánh doanh nghiệp  
-> **Nền tảng:** Mininet + FRRouting (FRR) + iperf3  
-> **OS:** Ubuntu 20.04 / 22.04 LTS (Linux)
+> **Đề tài:** Thiết kế và triển khai mạng Metro Ethernet sử dụng MPLS/VPLS cho kết nối đa chi nhánh doanh nghiệp  
+> **Nền tảng:** Mininet + FRRouting (FRR) trên Linux  
+> **OS:** Ubuntu 20.04 / 22.04 LTS
+
+---
+
+## 📐 Kiến Trúc Config-Driven
+
+Project được tổ chức theo mô hình **Config-Driven Architecture** — tách biệt hoàn toàn giữa khung mạng và nội dung cấu hình:
+
+```
+Topology skeleton (.py)  +  Config files (.yaml / .conf)
+                ↓
+          Runner script  →  Mininet Simulation
+```
+
+- **Topology files** → chỉ định nghĩa nodes và links (không embed IP cứng)
+- **Config files** → toàn bộ IP plan, FRR config (dễ sửa, dễ debug)
+- **Runner scripts** → chạy từng kịch bản kiểm tra độc lập
+- **ISP Backbone** → không chỉ tự cấu hình mà còn **đẩy config xuống CE chi nhánh**
 
 ---
 
 ## 📁 Cấu Trúc Project
 
 ```
-mpls_metro/
-├── topologies/
-│   ├── full_topology.py        # ← Topology tổng hợp (chạy chính)
-│   ├── backbone.py             # MPLS Backbone (P01-P04, PE01-PE03)
-│   ├── branch1_flat.py         # Chi nhánh 1: Mạng Phẳng
-│   ├── branch2_3tier.py        # Chi nhánh 2: Mạng 3 Lớp
-│   └── branch3_spineleaf.py    # Chi nhánh 3: Spine-Leaf (DC)
+Src_Mininet/
+├── topologies/                      ← Topology skeleton (khung)
+│   ├── branch1_flat.py              # Chi nhánh 1: Mạng Phẳng
+│   ├── branch2_3tier.py             # Chi nhánh 2: Mạng 3 Lớp
+│   ├── branch3_spineleaf.py         # Chi nhánh 3: Spine-Leaf DC
+│   ├── backbone.py                  # MPLS Backbone (P01-P04, PE01-PE03)
+│   └── full_topology.py             # Topology tổng hợp đầy đủ
 │
-├── configs/
-│   ├── frr_config_generator.py # Tạo file .conf cho FRR
-│   └── frr_deploy.py           # Deploy FRR vào Mininet nodes
+├── configs/                         ← Nội dung cấu hình
+│   ├── branch1/
+│   │   ├── ip_plan.yaml             # IP plan Branch 1 (hosts, CE, links, tests)
+│   │   └── ce01.conf                # FRR config CE01 (do ISP cung cấp)
+│   ├── branch2/
+│   │   ├── ip_plan.yaml             # IP plan Branch 2 + VLAN plan
+│   │   └── ce02.conf                # FRR config CE02 (do ISP cung cấp)
+│   ├── branch3/
+│   │   ├── ip_plan.yaml             # IP plan Branch 3 (Spine-Leaf /16)
+│   │   └── ce03.conf                # FRR config CE03 (do ISP cung cấp)
+│   └── backbone/
+│       ├── ip_plan.yaml             # IP plan đầy đủ P/PE routers + WAN links
+│       ├── vpls_policy.yaml         # VPLS service config (pseudowires, BGP EVPN)
+│       └── frr/
+│           ├── p01.conf             # FRR: OSPF + LDP
+│           ├── p02.conf
+│           ├── p03.conf
+│           ├── p04.conf
+│           ├── pe01.conf            # FRR: OSPF + LDP + BGP + VPLS
+│           ├── pe02.conf
+│           └── pe03.conf
+│
+├── runners/                         ← Script chạy từng kịch bản
+│   ├── run_branch1.py               # Phase 1: Test nội bộ Branch 1 (isolated)
+│   ├── run_branch2.py               # Phase 1: Test nội bộ Branch 2
+│   ├── run_branch3.py               # Phase 1: Test nội bộ Branch 3
+│   └── run_full_mpls.py             # Phase 2: Full MPLS + VPLS inter-branch
 │
 ├── tools/
-│   ├── measure_performance.py  # ← Công cụ đo lường chính
-│   ├── quick_test.py           # Kiểm tra kết nối nhanh
-│   └── generate_report.py      # Tạo biểu đồ + báo cáo HTML
+│   ├── config_loader.py             # Đọc YAML → apply IP vào Mininet nodes
+│   ├── frr_manager.py               # Deploy FRR + ISP push CE config
+│   ├── connectivity_test.py         # Auto ping test + báo cáo
+│   ├── measure_performance.py       # Đo throughput, delay, jitter (iperf3)
+│   ├── generate_report.py           # Tạo biểu đồ + báo cáo HTML
+│   └── quick_test.py                # Kiểm tra kết nối nhanh
 │
-├── results/                    # Kết quả đo (tự động tạo)
-├── install.sh                  # Script cài đặt dependencies
+├── result/                          # Kết quả test (tự động tạo)
+├── install.sh                       # Script cài đặt dependencies
 └── README.md
 ```
 
@@ -35,57 +79,51 @@ mpls_metro/
 
 ## 🏗 Kiến Trúc Hệ Thống
 
-### MPLS Backbone (Partial Mesh)
+### MPLS MAN Backbone (Partial Mesh + Dual-homed PE)
+
 ```
-        PE01 ──── CE01 ──── [Chi nhánh 1: Flat]
-       /    \
-      P01   P02
-      |  ╲╱  |
-      |  ╱╲  |
-      P03   P04
-       \    /
-        PE02 ──── CE02 ──── [Chi nhánh 2: 3-Tier]
-        PE03 ──── CE03 ──── [Chi nhánh 3: Spine-Leaf]
+Chi nhánh 1 (Flat)        Chi nhánh 2 (3-Tier)      Chi nhánh 3 (Spine-Leaf)
+  PC01-PC04                LAB/ADMIN/GUEST             WEB/DNS/DB servers
+     │                          │                            │
+    CE01                       CE02                         CE03
+     │  WAN 10.100.1.0/30       │  WAN 10.100.2.0/30         │  WAN 10.100.3.0/30
+    PE01 ─── P01 ─── P02 ─── PE02                           │
+     └────── P02 ─── P03 ─── PE02                           │
+                     P03 ─── P04 ─── PE03 ───────────────────┘
+                     P01 ─── P03  (diagonal)
+                     P02 ─── P04  (diagonal)
+
+Tất cả P/PE: OSPF Area 0 + LDP (MPLS label distribution)
+PE01-PE02-PE03: iBGP full-mesh (VPLS signaling)
 ```
 
-| Thiết bị | Loopback IP | Vai Trò |
-|----------|-------------|---------|
-| P01      | 10.0.0.1    | Core P-Router |
-| P02      | 10.0.0.2    | Core P-Router |
-| P03      | 10.0.0.3    | Core P-Router |
-| P04      | 10.0.0.4    | Core P-Router |
-| PE01     | 10.0.0.11   | Provider Edge (Dual-homed P01+P02) |
-| PE02     | 10.0.0.12   | Provider Edge (Dual-homed P02+P03) |
-| PE03     | 10.0.0.13   | Provider Edge (Dual-homed P03+P04) |
+### Chi Nhánh 1 — Flat Network
 
-### Chi Nhánh 1 — Mạng Phẳng (Flat)
 ```
-CE01 (GW: 10.1.0.1)
-  └── SW01
-       ├── PC01 (10.1.0.11)
-       ├── PC02 (10.1.0.12)
-       └── SW02
-            ├── PC03 (10.1.0.13)
-            └── PC04 (10.1.0.14)
+CE01 (10.1.0.1/24)
+  └─ SW01 ─── SW02
+       ├─ PC01 (10.1.0.11)    ├─ PC03 (10.1.0.13)
+       └─ PC02 (10.1.0.12)    └─ PC04 (10.1.0.14)
 ```
 
-### Chi Nhánh 2 — Mạng 3 Lớp (Core-Distribution-Access)
+### Chi Nhánh 2 — Three-Tier Network
+
 ```
-CE02
- ├── CORE01 ──── CORE02
-      ├── DIST01 ─ DIST02
-           ├── ACCESS01 → LAB   (10.2.10.x)
-           ├── ACCESS02 → ADMIN (10.2.20.x)
-           └── ACCESS03 → GUEST (10.2.30.x)
+CE02 (Inter-VLAN Router)
+  ├─ 10.2.10.1 → CORE01 → DIST01 → ACCESS01 → LAB   (VLAN 10)
+  ├─ 10.2.20.1 → CORE02 → DIST01 → ACCESS02 → ADMIN (VLAN 20)
+  └─ 10.2.30.1 → DIST02 ──────── → ACCESS03 → GUEST (VLAN 30)
 ```
 
-### Chi Nhánh 3 — Spine-Leaf (Data Center)
+### Chi Nhánh 3 — Spine-Leaf Data Center
+
 ```
-CE03 → LEAF01 (Border)
-        ├── SPINE01 ─── SPINE02
-             ├── LEAF02 → WEB (10.3.10.x)
-             ├── LEAF03 → DNS (10.3.20.x)
-             └── LEAF04 → DB  (10.3.30.x)
+CE03 (10.3.0.1/16 — DC supernet gateway)
+  └─ LEAF01 (Border)
+       ├─ SPINE01 ─┬─ LEAF02 → WEB01, WEB02 (10.3.10.x)
+       │            ├─ LEAF03 → DNS01, DNS02 (10.3.20.x)
+       │            └─ LEAF04 → DB01,  DB02  (10.3.30.x)
+       └─ SPINE02 ─┴─ (ECMP fabric)
 ```
 
 ---
@@ -98,184 +136,184 @@ CE03 → LEAF01 (Border)
 sudo bash install.sh
 ```
 
-Lệnh này cài đặt: Mininet, FRRouting (FRR), iperf3, Python matplotlib, MPLS kernel modules.
-
-> **Lưu ý:** Cần kết nối Internet. Thời gian khoảng 3-5 phút.
+Cài đặt: Mininet, FRRouting (FRR), iperf3, Python matplotlib, MPLS kernel modules.
 
 ---
 
-### Bước 2: Tạo file cấu hình FRR
+### Phase 1 — Test Nội Bộ Từng Chi Nhánh (Isolated)
+
+Chạy riêng từng branch để xác nhận cấu hình nội bộ hoạt động trước khi kết nối MPLS.
 
 ```bash
-python3 configs/frr_config_generator.py
+# Chi nhánh 1: Flat Network
+sudo python3 runners/run_branch1.py
+
+# Chi nhánh 2: Three-Tier + Inter-VLAN Routing
+sudo python3 runners/run_branch2.py
+
+# Chi nhánh 3: Spine-Leaf Data Center
+sudo python3 runners/run_branch3.py
+
+# Chạy auto test (không mở CLI)
+sudo python3 runners/run_branch1.py --test
+sudo python3 runners/run_branch2.py --test
+sudo python3 runners/run_branch3.py --test
 ```
 
-Tạo file `.conf` cho tất cả routers (P01-P04, PE01-PE03, CE01-CE03) trong thư mục `configs/`.
+**Kết quả mong đợi Phase 1:**
+
+| Branch | Test | Kỳ vọng |
+|--------|------|---------|
+| Branch 1 | PC01 ↔ PC04 | ✅ PASS (same subnet /24) |
+| Branch 2 | LAB ↔ ADMIN | ✅ PASS (inter-VLAN qua CE02) |
+| Branch 3 | WEB ↔ DB | ✅ PASS (cross-rack qua Spine) |
 
 ---
 
-### Bước 3: Kiểm tra kết nối nhanh
+### Phase 2 — Test Kết Nối Liên Chi Nhánh (MPLS VPLS)
 
 ```bash
-sudo python3 tools/quick_test.py
+# Full topology với FRR (OSPF + LDP + BGP + VPLS)
+sudo python3 runners/run_full_mpls.py
+
+# Dùng static routes (nếu FRR chưa cài đặt)
+sudo python3 runners/run_full_mpls.py --no-frr
+
+# Auto test only
+sudo python3 runners/run_full_mpls.py --test
 ```
 
-Ping 13 cặp host (intra + inter branch). Kết quả mong đợi: **13/13 PASS**.
+**Quy trình bên trong `run_full_mpls.py`:**
+
+1. Build full topology (tất cả nodes)
+2. Apply IP config từ YAML (backbone + 3 branches)
+3. Deploy FRR → P01-P04 (OSPF + LDP)
+4. Deploy FRR → PE01-PE03 (OSPF + LDP + BGP)
+5. **ISP push CE config** → CE01, CE02, CE03 (OSPF + static)
+6. Setup VPLS bridge (GRE tunnel + Linux bridge)
+7. Chờ OSPF/LDP converge (~30s)
+8. Verify: OSPF neighbors, LDP sessions, BGP sessions
+9. **Test Phase 1:** Backbone connectivity
+10. **Test Phase 2:** Inter-branch ping qua VPLS
 
 ---
 
-### Bước 4: Đo lường hiệu năng đầy đủ
+### Đo Lường Hiệu Năng
 
 ```bash
-# Đo tất cả (intra + inter + stress) — khuyến nghị
+# Đo tất cả (intra + inter + stress)
 sudo python3 tools/measure_performance.py --mode all --duration 10
 
 # Chỉ đo inter-branch (qua MPLS backbone)
 sudo python3 tools/measure_performance.py --mode inter
 
-# Chỉ đo intra-branch (nội bộ từng chi nhánh)
-sudo python3 tools/measure_performance.py --mode intra
-
-# Chỉ đo stress test (high load)
+# Stress test (high load, 4 luồng song song)
 sudo python3 tools/measure_performance.py --mode stress
 
-# Đo với thời gian iperf3 dài hơn (30 giây/test)
-sudo python3 tools/measure_performance.py --mode all --duration 30
-```
-
-Kết quả lưu vào: `results/results_YYYYMMDD_HHMMSS.json` và `results/summary_*.csv`
-
----
-
-### Bước 5: Tạo biểu đồ và báo cáo HTML
-
-```bash
+# Tạo báo cáo HTML + biểu đồ
 python3 tools/generate_report.py
-# Mở báo cáo trong browser:
-xdg-open results/report_*/report.html
 ```
 
 ---
 
-### Chạy Interactive Mininet CLI (tùy chọn)
+### Mininet CLI (Interactive)
 
 ```bash
-sudo python3 topologies/full_topology.py
+# Chạy từng branch
+sudo python3 runners/run_branch1.py    # Mở CLI sau khi test
+
+# Full topology
+sudo python3 runners/run_full_mpls.py  # Mở CLI sau khi test
 ```
 
-Trong Mininet CLI:
+Các lệnh hữu ích trong CLI:
 ```
-mininet> pingall               # Ping tất cả cặp hosts
-mininet> pc01 ping 10.3.10.11  # Ping từ PC01 đến web01
-mininet> xterm pc01            # Mở terminal cho pc01
-mininet> nodes                 # Liệt kê tất cả nodes
-mininet> links                 # Liệt kê tất cả links
-mininet> dump                  # Thông tin chi tiết
-```
-
----
-
-## 📊 Các Chỉ Số Được Đo
-
-| Chỉ Số | Công Cụ | Mô Tả |
-|--------|---------|-------|
-| **Throughput** | iperf3 TCP/UDP | Băng thông thực tế (Mbps) |
-| **Delay (RTT)** | ping | Độ trễ khứ hồi (ms) |
-| **Packet Loss** | ping + iperf3 UDP | Tỷ lệ mất gói (%) |
-| **Jitter** | ping mdev + iperf3 UDP | Biến thiên độ trễ (ms) |
-| **Hop Count** | traceroute | Số bước nhảy qua backbone |
-| **Retransmits** | iperf3 TCP | Số lần truyền lại TCP |
-
-### Test Cases
-
-**Intra-Branch (9 tests):**
-- Branch 1: same switch, daisy-chain
-- Branch 2: same VLAN, inter-VLAN routing
-- Branch 3: same leaf, cross-leaf (2 hops)
-
-**Inter-Branch qua MPLS (9 tests):**
-- B1 ↔ B2, B1 ↔ B3, B2 ↔ B3 (cả hai chiều)
-
-**Stress Tests (3 tests):**
-- 4 luồng UDP song song x 15 giây
-
----
-
-## 🔧 Triển Khai MPLS với FRR (Tùy Chọn Nâng Cao)
-
-Để chạy OSPF + LDP thực sự thay vì static routes:
-
-```bash
-# 1. Khởi động topology (không thoát)
-sudo python3 -c "
-from topologies.full_topology import build_full_topology, configure_ip_addresses
-from configs.frr_deploy import deploy_all
-net = build_full_topology()
-net.start()
-configure_ip_addresses(net)
-deploy_all(net)
-import time; time.sleep(15)  # Chờ OSPF converge
-from mininet.cli import CLI
-CLI(net)
-net.stop()
-"
-```
-
-Sau khi OSPF hội tụ (~10-15s), kiểm tra:
-```bash
-# Trong Mininet CLI, trên node pe01:
-pe01 vtysh -c "show ospf neighbor"
-pe01 vtysh -c "show mpls ldp neighbor"
-pe01 vtysh -c "show bgp l2vpn evpn summary"
+mininet> pingall                        # Ping tất cả cặp
+mininet> pc01 ping 10.2.10.11          # Ping từ B1 đến B2 (lab01)
+mininet> pe01 vtysh -c "show ip ospf neighbor"
+mininet> p01  vtysh -c "show mpls ldp neighbor"
+mininet> pe01 vtysh -c "show bgp l2vpn evpn summary"
+mininet> pc01 traceroute 10.3.10.11    # Trace path B1 -> B3
+mininet> nodes                          # Liệt kê tất cả nodes
+mininet> dump                           # Thông tin chi tiết
 ```
 
 ---
 
 ## 📋 IP Address Plan
 
-| Vùng | Dải IP | Mô Tả |
-|------|--------|-------|
-| Backbone Loopbacks | 10.0.0.0/24 | Router IDs |
-| P-P Links | 10.0.10.0/21 | Core mesh links (/30 each) |
-| PE-P Links | 10.0.20.0/21 | Edge links (/30 each) |
-| WAN PE-CE | 10.100.x.0/30 | ISP to Customer links |
-| Branch 1 | 10.1.0.0/24 | Flat LAN |
-| Branch 2 LAB | 10.2.10.0/24 | VLAN 10 |
-| Branch 2 ADMIN | 10.2.20.0/24 | VLAN 20 |
-| Branch 2 GUEST | 10.2.30.0/24 | VLAN 30 |
-| Branch 3 WEB | 10.3.10.0/24 | WEB servers |
-| Branch 3 DNS | 10.3.20.0/24 | DNS servers |
-| Branch 3 DB | 10.3.30.0/24 | DB servers |
+| Vùng | Subnet | Ghi Chú |
+|------|--------|---------|
+| Loopbacks P/PE | `10.0.0.1–13/32` | Router-ID, LDP transport |
+| P-P links | `10.0.10–14.x/30` | Backbone core mesh |
+| PE-P links | `10.0.20–25.x/30` | Dual-homed edge links |
+| WAN PE-CE | `10.100.1–3.x/30` | ISP handoff |
+| Branch 1 LAN | `10.1.0.0/24` | PC01–PC04, GW=CE01 |
+| Branch 2 LAB | `10.2.10.0/24` | VLAN 10, GW=CE02 |
+| Branch 2 ADMIN | `10.2.20.0/24` | VLAN 20, GW=CE02 |
+| Branch 2 GUEST | `10.2.30.0/24` | VLAN 30, GW=CE02 |
+| Branch 3 DC | `10.3.0.0/16` | Supernet, GW=CE03 (10.3.0.1) |
+
+---
+
+## 🔧 Chỉnh Sửa Cấu Hình
+
+Tất cả cấu hình nằm trong `configs/` — **không cần sửa topology files**.
+
+| Muốn thay đổi | Sửa file |
+|---------------|----------|
+| IP địa chỉ Branch 1 | `configs/branch1/ip_plan.yaml` |
+| VLAN plan Branch 2 | `configs/branch2/ip_plan.yaml` |
+| OSPF/static trên CE01 | `configs/branch1/ce01.conf` |
+| OSPF + LDP trên P02 | `configs/backbone/frr/p02.conf` |
+| VPLS pseudowire config | `configs/backbone/vpls_policy.yaml` |
+| BGP EVPN trên PE01 | `configs/backbone/frr/pe01.conf` |
+
+---
+
+## 📊 Metrics Đo Lường
+
+| Chỉ Số | Công Cụ | Mô Tả |
+|--------|---------|-------|
+| Throughput | iperf3 TCP/UDP | Băng thông (Mbps) |
+| Delay (RTT) | ping | Độ trễ khứ hồi (ms) |
+| Packet Loss | ping + iperf3 | Tỷ lệ mất gói (%) |
+| Jitter | iperf3 UDP | Biến thiên độ trễ (ms) |
+| Hop Count | traceroute | Số bước qua backbone |
 
 ---
 
 ## ❗ Troubleshooting
 
-**Lỗi: `RTNETLINK answers: Operation not permitted`**
+**MPLS kernel module chưa load:**
 ```bash
 sudo modprobe mpls_router
+sudo modprobe mpls_gso
 sudo sysctl -w net.mpls.platform_labels=1048575
 ```
 
-**Lỗi: `iperf3: error - the server is busy`**
+**Mininet còn dữ liệu cũ:**
+```bash
+sudo mn -c
+```
+
+**iperf3 server bận:**
 ```bash
 sudo pkill -f iperf3
 ```
 
-**Ping thất bại inter-branch:**
+**FRR chưa cài:**
 ```bash
-# Kiểm tra routing table trên PE
-sudo python3 -c "
-from topologies.full_topology import build_full_topology, configure_ip_addresses, configure_routing
-net = build_full_topology(); net.start()
-configure_ip_addresses(net); configure_routing(net)
-net.get('pe01').cmd('ip route')  # In routing table
-"
+sudo apt install -y frr frr-pythontools
+# Bật các daemons cần thiết trong /etc/frr/daemons
 ```
 
-**Mininet không xóa sạch:**
+**Inter-branch ping fail (static routes mode):**
 ```bash
-sudo mn -c  # Clean up Mininet state
+# Kiểm tra routing table trên PE
+pe01 ip route
+pe01 ip -M route    # MPLS labels
+p02  ip route       # P-router forwarding
 ```
 
 ---
@@ -287,8 +325,9 @@ sudo mn -c  # Clean up Mininet state
 | Python | ≥ 3.8 | Runtime |
 | Mininet | ≥ 2.3.0 | Network emulation |
 | FRRouting | ≥ 8.x | OSPF, LDP, BGP daemons |
-| iperf3 | ≥ 3.x | Throughput measurement |
-| matplotlib | ≥ 3.x | Chart generation (optional) |
+| PyYAML | ≥ 5.x | Đọc file config YAML |
+| iperf3 | ≥ 3.x | Đo throughput |
+| matplotlib | ≥ 3.x | Vẽ biểu đồ (optional) |
 
 ---
 
