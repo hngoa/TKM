@@ -19,7 +19,7 @@ import os
 import sys
 import time
 from datetime import datetime
-from mininet.log import info, warn
+from mininet.log import info, warn, error
 
 
 class TestResult:

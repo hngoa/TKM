@@ -22,6 +22,7 @@ Chạy:
 
 import sys
 import os
+import time
 import argparse
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -65,6 +66,8 @@ def build_branch2_isolated(loader):
     # --- Switches ---
     info('*** Thêm Switches (3-Tier: Core/Dist/Access)\n')
     for sw_cfg in loader.get_switches():
+        # Branch 2 có mesh giữa core-dist (có loop L2)
+        # STP sẽ được bật sau khi start → dùng RSTP (hội tụ ~2s thay vì 30s)
         net.addSwitch(sw_cfg['name'], failMode='standalone')
 
     # --- Hosts ---
@@ -111,6 +114,20 @@ def run(interactive=True, save_report=True):
 
     try:
         net.start()
+
+        # Branch 2 có redundant links giữa core-dist (L2 loop)
+        # Bật RSTP (Rapid STP): hội tụ trong ~1-2s thay vì 802.1D STP 30s
+        info('*** Bật RSTP trên các switches (Rapid STP, hội tụ ~2s)...\n')
+        for sw in net.switches:
+            result = sw.cmd(f'ovs-vsctl set bridge {sw.name} rstp_enable=true 2>&1')
+            if 'error' in result.lower() or 'unknown' in result.lower():
+                # Fallback: STP thường (chậm hơn)
+                sw.cmd(f'ovs-vsctl set bridge {sw.name} stp_enable=true 2>/dev/null || true')
+                info(f'  [{sw.name}] Fallback to STP (RSTP không khả dụng)\n')
+            else:
+                info(f'  [{sw.name}] RSTP OK\n')
+        info('*** Chờ RSTP hội tụ...\n')
+        time.sleep(5)  # RSTP ~2s, chờ 5s để đảm bảo
 
         info('\n*** Áp dụng cấu hình IP\n')
         loader.apply_all(net, mode='isolated')

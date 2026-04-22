@@ -23,6 +23,7 @@ Chạy:
 
 import sys
 import os
+import time
 import argparse
 
 # Thêm thư mục gốc và tools vào Python path
@@ -77,7 +78,9 @@ def build_branch1_isolated(loader):
     # --- Switches (from YAML config) ---
     info('*** Thêm Switches\n')
     for sw_cfg in loader.get_switches():
-        net.addSwitch(sw_cfg['name'], failMode='standalone')
+        # failMode=standalone: MAC-learning switch, không cần controller
+        # stp=False: branch1 không có loop → tắt STP để port up ngay lập tức
+        net.addSwitch(sw_cfg['name'], failMode='standalone', stp=False)
 
     # --- Hosts (from YAML config) ---
     info('*** Thêm Hosts\n')
@@ -123,6 +126,12 @@ def run(interactive=True, save_report=True):
 
     try:
         net.start()
+
+        # Branch 1: cây thẳng (không có loop) → tắt STP, port up ngay
+        info('*** Điều chỉnh STP cho switches...\n')
+        for sw in net.switches:
+            sw.cmd(f'ovs-vsctl set bridge {sw.name} stp_enable=false 2>/dev/null || true')
+        time.sleep(1)  # [đợi switches khởi động]
 
         # Apply IP config (isolated mode: bỏ qua WAN interface)
         info('\n*** Áp dụng cấu hình IP từ YAML\n')

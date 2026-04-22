@@ -23,6 +23,7 @@ Chạy:
 
 import sys
 import os
+import time
 import argparse
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -68,6 +69,8 @@ def build_branch3_isolated(loader):
     # --- Spine/Leaf Switches ---
     info('*** Thêm Spine/Leaf switches\n')
     for sw_cfg in loader.get_switches():
+        # Spine-Leaf fabric: mỗi leaf nối với cả spine01 và spine02 (L2 loop)
+        # RSTP sẽ được bật sau khi start
         net.addSwitch(sw_cfg['name'], failMode='standalone')
 
     # --- Server Hosts ---
@@ -114,6 +117,19 @@ def run(interactive=True, save_report=True):
 
     try:
         net.start()
+
+        # Spine-Leaf có loop: leaf02/03/04 mỗi cái nối cả spine01 lẫn spine02
+        # Bật RSTP để hội tụ nhanh (~2s thay vì STP 30s)
+        info('*** Bật RSTP trên các Spine/Leaf switches...\n')
+        for sw in net.switches:
+            result = sw.cmd(f'ovs-vsctl set bridge {sw.name} rstp_enable=true 2>&1')
+            if 'error' in result.lower() or 'unknown' in result.lower():
+                sw.cmd(f'ovs-vsctl set bridge {sw.name} stp_enable=true 2>/dev/null || true')
+                info(f'  [{sw.name}] Fallback to STP\n')
+            else:
+                info(f'  [{sw.name}] RSTP OK\n')
+        info('*** Chờ RSTP hội tụ...\n')
+        time.sleep(5)
 
         info('\n*** Áp dụng cấu hình IP (/16 supernet)\n')
         loader.apply_all(net, mode='isolated')
