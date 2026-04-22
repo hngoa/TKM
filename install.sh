@@ -57,9 +57,9 @@ fi
 
 echo ""
 echo "[5/6] Cài đặt Python dependencies..."
-apt install -y python3-pip python3-matplotlib 2>/dev/null || true
-pip3 install matplotlib 2>/dev/null || pip install matplotlib 2>/dev/null || true
-echo "      ✓ Python packages OK"
+apt install -y python3-pip python3-matplotlib python3-yaml 2>/dev/null || true
+pip3 install matplotlib pyyaml 2>/dev/null || pip install matplotlib pyyaml 2>/dev/null || true
+echo "      ✓ Python packages OK (matplotlib, pyyaml)"
 
 echo ""
 echo "[6/6] Bật kernel MPLS modules..."
@@ -82,8 +82,18 @@ echo ""
 echo "========================================"
 echo "  ✅ Cài đặt hoàn tất!"
 echo ""
-echo "  Bước tiếp theo:"
-echo "    1. sudo python3 tools/quick_test.py         # Kiểm tra kết nối"
-echo "    2. sudo python3 tools/measure_performance.py # Đo hiệu năng"
-echo "    3. python3 tools/generate_report.py         # Tạo báo cáo"
+echo "  Bước tiếp theo:
+
+    [Phase 1 - Test nội bộ từng chi nhánh]
+    sudo python3 runners/run_branch1.py --test   # Flat Network
+    sudo python3 runners/run_branch2.py --test   # Three-Tier + Inter-VLAN
+    sudo python3 runners/run_branch3.py --test   # Spine-Leaf DC
+
+    [Phase 2 - Test liên chi nhánh qua MPLS VPLS]
+    sudo python3 runners/run_full_mpls.py        # FRR OSPF+LDP+BGP+VPLS
+    sudo python3 runners/run_full_mpls.py --no-frr  # Static routes fallback
+
+    [Đo hiệu năng]
+    sudo python3 tools/measure_performance.py --mode all
+    python3 tools/generate_report.py             # Tạo báo cáo HTML"
 echo "========================================"
