@@ -57,34 +57,14 @@ sys.path.insert(0, PROJECT_ROOT)
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'tools'))
 
 from mininet.net import Mininet
-from mininet.node import Node
 from mininet.link import TCLink
 from mininet.log import setLogLevel, info, warn
 from mininet.cli import CLI
 
+from node_types import MPLSRouter       # dùng chung từ tools/node_types.py
 from config_loader import BackboneConfigLoader
 from frr_manager import FRRManager
 from connectivity_test import ConnectivityTest, TestReport, TestResult
-
-
-# ----------------------------------------------------------------
-# MPLS-capable Router node
-# ----------------------------------------------------------------
-class MPLSRouter(Node):
-    """Linux node với IP forwarding + MPLS support."""
-
-    def config(self, **params):
-        super().config(**params)
-        # IP forwarding
-        self.cmd('sysctl -w net.ipv4.ip_forward=1')
-        # MPLS label space
-        self.cmd('sysctl -w net.mpls.platform_labels=1048575')
-        # Bật MPLS input trên loopback
-        self.cmd('sysctl -w net.mpls.conf.lo.input=1 2>/dev/null || true')
-
-    def terminate(self):
-        self.cmd('sysctl -w net.ipv4.ip_forward=0')
-        super().terminate()
 
 
 # ----------------------------------------------------------------

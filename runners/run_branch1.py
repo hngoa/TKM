@@ -32,27 +32,14 @@ sys.path.insert(0, PROJECT_ROOT)
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'tools'))
 
 from mininet.net import Mininet
-from mininet.node import Node, OVSSwitch
+from mininet.node import OVSSwitch
 from mininet.link import TCLink
 from mininet.log import setLogLevel, info
 from mininet.cli import CLI
 
+from node_types import LinuxRouter      # dùng chung từ tools/node_types.py
 from config_loader import ConfigLoader
 from connectivity_test import ConnectivityTest
-
-
-# ----------------------------------------------------------------
-# LinuxRouter class (chạy IP forwarding trên Mininet node)
-# ----------------------------------------------------------------
-class LinuxRouter(Node):
-    """Mininet node với IP forwarding bật sẵn."""
-    def config(self, **params):
-        super().config(**params)
-        self.cmd('sysctl -w net.ipv4.ip_forward=1')
-
-    def terminate(self):
-        self.cmd('sysctl -w net.ipv4.ip_forward=0')
-        super().terminate()
 
 
 # ----------------------------------------------------------------
