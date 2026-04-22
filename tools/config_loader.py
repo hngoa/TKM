@@ -317,8 +317,8 @@ class BackboneConfigLoader:
             info(f"     {name} lo: {lo}\n")
 
     def _apply_p_router_interfaces(self, net):
-        """Apply IP config cho P-Routers."""
-        info('  [*] Cấu hình P-Router interfaces\n')
+        """Apply IP config và static routes cho P-Routers."""
+        info('  [*] Cấu hình P-Router interfaces & routes\n')
         for router in self.config.get('p_routers', []):
             name = router['name']
             node = net.get(name)
@@ -327,19 +327,27 @@ class BackboneConfigLoader:
             node.cmd('sysctl -w net.ipv4.ip_forward=1')
             node.cmd('sysctl -w net.mpls.platform_labels=1048575')
 
+            # Cấu hình interfaces
             for intf in router.get('interfaces', []):
                 intf_name = intf['name']
                 intf_ip   = intf['ip']
                 node.cmd(f'ip addr add {intf_ip} dev {intf_name} 2>/dev/null || true')
                 node.cmd(f'ip link set {intf_name} up')
                 # Bật MPLS input trên interface
-                dev = intf_name.replace('-', '').replace('_', '')
                 node.cmd(f'sysctl -w net.mpls.conf.{intf_name}.input=1 2>/dev/null || true')
                 info(f"     {name} {intf_name}: {intf_ip}\n")
+            
+            # Cấu hình static routes (nếu có)
+            for route in router.get('static_routes', []):
+                prefix = route.get('prefix')
+                via    = route.get('via')
+                if prefix and via:
+                    node.cmd(f'ip route add {prefix} via {via} 2>/dev/null || true')
+                    info(f"     {name} route: {prefix} via {via}\n")
 
     def _apply_pe_router_interfaces(self, net):
-        """Apply IP config cho PE-Routers."""
-        info('  [*] Cấu hình PE-Router interfaces\n')
+        """Apply IP config và static routes cho PE-Routers."""
+        info('  [*] Cấu hình PE-Router interfaces & routes\n')
         for router in self.config.get('pe_routers', []):
             name = router['name']
             node = net.get(name)
@@ -348,6 +356,7 @@ class BackboneConfigLoader:
             node.cmd('sysctl -w net.ipv4.ip_forward=1')
             node.cmd('sysctl -w net.mpls.platform_labels=1048575')
 
+            # Cấu hình interfaces
             for intf in router.get('interfaces', []):
                 intf_name = intf['name']
                 intf_ip   = intf['ip']
@@ -357,6 +366,14 @@ class BackboneConfigLoader:
                 if not intf.get('wan_link', False):
                     node.cmd(f'sysctl -w net.mpls.conf.{intf_name}.input=1 2>/dev/null || true')
                 info(f"     {name} {intf_name}: {intf_ip}\n")
+
+            # Cấu hình static routes (nếu có)
+            for route in router.get('static_routes', []):
+                prefix = route.get('prefix')
+                via    = route.get('via')
+                if prefix and via:
+                    node.cmd(f'ip route add {prefix} via {via} 2>/dev/null || true')
+                    info(f"     {name} route: {prefix} via {via}\n")
 
     def _apply_ce_wan_interfaces(self, net):
         """Apply WAN IP cho CE routers (PE side đã xong, giờ apply CE side)."""

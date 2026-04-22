@@ -184,68 +184,7 @@ def _build_default_pe_p_links(net):
 # ----------------------------------------------------------------
 # Apply Static Routes (fallback khi không dùng FRR)
 # ----------------------------------------------------------------
-def apply_backbone_static_routes(net):
-    """
-    Static routes cho backbone (để test routing mà không cần FRR).
-    Mỗi router cần biết đường đến loopback của các router khác.
-    """
-    info('\n*** Cấu hình Static Routes cho backbone (--no-frr mode)\n')
 
-    # P01: biết đường đến tất cả loopbacks qua neighbors
-    p01 = net.get('p01')
-    p01.cmd('ip route add 10.0.0.2/32  via 10.0.10.2')   # P02 qua eth0
-    p01.cmd('ip route add 10.0.0.3/32  via 10.0.13.2')   # P03 qua diagonal
-    p01.cmd('ip route add 10.0.0.4/32  via 10.0.10.2')   # P04 qua P02
-    p01.cmd('ip route add 10.0.0.12/32 via 10.0.10.2')   # PE02 qua P02
-    p01.cmd('ip route add 10.0.0.13/32 via 10.0.13.2')   # PE03 qua P03
-    p01.cmd('ip route add 10.0.0.11/32 via 10.0.20.1')   # PE01 loopback qua link direct
-
-    # P02: central hub
-    p02 = net.get('p02')
-    p02.cmd('ip route add 10.0.0.1/32  via 10.0.10.1')
-    p02.cmd('ip route add 10.0.0.3/32  via 10.0.11.2')
-    p02.cmd('ip route add 10.0.0.4/32  via 10.0.14.2')
-    p02.cmd('ip route add 10.0.0.11/32 via 10.0.21.1')   # PE01 via pe01-p02
-    p02.cmd('ip route add 10.0.0.12/32 via 10.0.22.1')   # PE02
-    p02.cmd('ip route add 10.0.0.13/32 via 10.0.11.2')
-
-    # P03
-    p03 = net.get('p03')
-    p03.cmd('ip route add 10.0.0.1/32  via 10.0.13.1')
-    p03.cmd('ip route add 10.0.0.2/32  via 10.0.11.1')
-    p03.cmd('ip route add 10.0.0.4/32  via 10.0.12.2')
-    p03.cmd('ip route add 10.0.0.11/32 via 10.0.11.1')
-    p03.cmd('ip route add 10.0.0.12/32 via 10.0.23.1')   # PE02
-    p03.cmd('ip route add 10.0.0.13/32 via 10.0.24.1')   # PE03
-
-    # P04
-    p04 = net.get('p04')
-    p04.cmd('ip route add 10.0.0.1/32  via 10.0.14.1')
-    p04.cmd('ip route add 10.0.0.2/32  via 10.0.14.1')
-    p04.cmd('ip route add 10.0.0.3/32  via 10.0.12.1')
-    p04.cmd('ip route add 10.0.0.11/32 via 10.0.14.1')
-    p04.cmd('ip route add 10.0.0.12/32 via 10.0.12.1')
-    p04.cmd('ip route add 10.0.0.13/32 via 10.0.25.1')   # PE03
-
-    # PE01
-    pe01 = net.get('pe01')
-    pe01.cmd('ip route add 10.0.0.0/24 via 10.0.20.2')   # tất cả loopbacks qua P01
-    pe01.cmd('ip route add 10.0.0.12/32 via 10.0.21.2')  # PE02 path qua P02
-    pe01.cmd('ip route add 10.0.0.13/32 via 10.0.21.2')  # PE03 path qua P02
-
-    # PE02
-    pe02 = net.get('pe02')
-    pe02.cmd('ip route add 10.0.0.0/24  via 10.0.22.2')
-    pe02.cmd('ip route add 10.0.0.11/32 via 10.0.22.2')
-    pe02.cmd('ip route add 10.0.0.13/32 via 10.0.23.2')
-
-    # PE03
-    pe03 = net.get('pe03')
-    pe03.cmd('ip route add 10.0.0.0/24  via 10.0.24.2')
-    pe03.cmd('ip route add 10.0.0.11/32 via 10.0.24.2')
-    pe03.cmd('ip route add 10.0.0.12/32 via 10.0.23.2')
-
-    info('*** Static routes configured\n')
 
 
 # ----------------------------------------------------------------
@@ -447,7 +386,7 @@ def run(interactive=True, use_frr=True, save_report=True):
         info('\n*** [Phase 0a] Áp dụng cấu hình IP backbone\n')
         backbone_loader.apply_all(net)
 
-        # ---- Phase 0b: Deploy FRR hoặc Static Routes ----
+        # ---- Phase 0b: Deploy FRR (OSPF + LDP + BGP) ----
         if use_frr:
             info('\n*** [Phase 0b] Triển khai FRR (OSPF + LDP + BGP)\n')
             frr_mgr = FRRManager(net)
@@ -456,11 +395,9 @@ def run(interactive=True, use_frr=True, save_report=True):
                 info('\n*** Chờ OSPF + LDP hội tụ (30 giây)...\n')
                 frr_mgr.wait_convergence(timeout=30)
             else:
-                warn('[!] FRR không khả dụng, dùng static routes\n')
-                apply_backbone_static_routes(net)
+                warn('[!] FRR không khả dụng — đã áp dụng static routes fallback từ YAML\n')
         else:
-            info('\n*** [Phase 0b] Cấu hình Static Routes (--no-frr mode)\n')
-            apply_backbone_static_routes(net)
+            info('\n*** [Phase 0b] Bỏ qua FRR (Sử dụng Static Routes từ YAML)\n')
 
         # ---- Phase 0c: Connectivity Tests ----
         info('\n*** [Phase 0c] Chạy Backbone Connectivity Tests\n')
