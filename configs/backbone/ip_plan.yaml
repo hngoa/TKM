@@ -1,0 +1,361 @@
+# ============================================================
+# configs/backbone/ip_plan.yaml
+# MPLS Backbone — ISP Network
+# Mô phỏng nhà cung cấp dịch vụ MAN (Metro Area Network)
+#
+# Mô hình:
+#   P01 -- P02 -- P03 -- P04    (Core Provider Routers - label switching only)
+#    |      |  \  /  \    |
+#   PE01  PE01  PE02  PE03      (Provider Edge - VPLS endpoints)
+#
+# Dual-homed PE:
+#   PE01 -> P01, P02
+#   PE02 -> P02, P03
+#   PE03 -> P03, P04
+# ============================================================
+
+description: "MPLS MAN Backbone - ISP Provider Network"
+asn: 65000                      # Internal AS number
+ospf_area: "0.0.0.0"           # Backbone OSPF area
+ldp_transport: loopback         # LDP transport address = loopback
+
+# ----------------------------------------------------------------
+# P-Routers (Provider Core Routers)
+# Chức năng: Label Switching Only — OSPF + LDP
+# KHÔNG tham gia BGP, KHÔNG biết về customer prefixes
+# ----------------------------------------------------------------
+p_routers:
+  - name: p01
+    loopback: 10.0.0.1/32
+    description: "Core Router P01 - West hub"
+    frr_config: "configs/backbone/frr/p01.conf"
+    interfaces:
+      - name: p01-eth0
+        ip: 10.0.10.1/30
+        peer: p02
+        peer_ip: 10.0.10.2
+        link_subnet: 10.0.10.0/30
+        description: "P01 <-> P02 core link"
+      - name: p01-eth1
+        ip: 10.0.13.1/30
+        peer: p03
+        peer_ip: 10.0.13.2
+        link_subnet: 10.0.13.0/30
+        description: "P01 <-> P03 diagonal link"
+      - name: p01-pe01
+        ip: 10.0.20.2/30
+        peer: pe01
+        peer_ip: 10.0.20.1
+        link_subnet: 10.0.20.0/30
+        description: "P01 <-> PE01 edge connection"
+
+  - name: p02
+    loopback: 10.0.0.2/32
+    description: "Core Router P02 - Central hub"
+    frr_config: "configs/backbone/frr/p02.conf"
+    interfaces:
+      - name: p02-eth0
+        ip: 10.0.10.2/30
+        peer: p01
+        peer_ip: 10.0.10.1
+        link_subnet: 10.0.10.0/30
+        description: "P02 <-> P01 core link"
+      - name: p02-eth1
+        ip: 10.0.11.1/30
+        peer: p03
+        peer_ip: 10.0.11.2
+        link_subnet: 10.0.11.0/30
+        description: "P02 <-> P03 core link"
+      - name: p02-eth2
+        ip: 10.0.14.1/30
+        peer: p04
+        peer_ip: 10.0.14.2
+        link_subnet: 10.0.14.0/30
+        description: "P02 <-> P04 diagonal link"
+      - name: p02-pe01
+        ip: 10.0.21.2/30
+        peer: pe01
+        peer_ip: 10.0.21.1
+        link_subnet: 10.0.21.0/30
+        description: "P02 <-> PE01 (dual-homed)"
+      - name: p02-pe02
+        ip: 10.0.22.2/30
+        peer: pe02
+        peer_ip: 10.0.22.1
+        link_subnet: 10.0.22.0/30
+        description: "P02 <-> PE02 edge connection"
+
+  - name: p03
+    loopback: 10.0.0.3/32
+    description: "Core Router P03 - East-Central hub"
+    frr_config: "configs/backbone/frr/p03.conf"
+    interfaces:
+      - name: p03-eth0
+        ip: 10.0.11.2/30
+        peer: p02
+        peer_ip: 10.0.11.1
+        link_subnet: 10.0.11.0/30
+        description: "P03 <-> P02 core link"
+      - name: p03-eth1
+        ip: 10.0.12.1/30
+        peer: p04
+        peer_ip: 10.0.12.2
+        link_subnet: 10.0.12.0/30
+        description: "P03 <-> P04 core link"
+      - name: p03-eth2
+        ip: 10.0.13.2/30
+        peer: p01
+        peer_ip: 10.0.13.1
+        link_subnet: 10.0.13.0/30
+        description: "P03 <-> P01 diagonal link"
+      - name: p03-pe02
+        ip: 10.0.23.2/30
+        peer: pe02
+        peer_ip: 10.0.23.1
+        link_subnet: 10.0.23.0/30
+        description: "P03 <-> PE02 (dual-homed)"
+      - name: p03-pe03
+        ip: 10.0.24.2/30
+        peer: pe03
+        peer_ip: 10.0.24.1
+        link_subnet: 10.0.24.0/30
+        description: "P03 <-> PE03 edge connection"
+
+  - name: p04
+    loopback: 10.0.0.4/32
+    description: "Core Router P04 - East hub"
+    frr_config: "configs/backbone/frr/p04.conf"
+    interfaces:
+      - name: p04-eth0
+        ip: 10.0.12.2/30
+        peer: p03
+        peer_ip: 10.0.12.1
+        link_subnet: 10.0.12.0/30
+        description: "P04 <-> P03 core link"
+      - name: p04-eth1
+        ip: 10.0.14.2/30
+        peer: p02
+        peer_ip: 10.0.14.1
+        link_subnet: 10.0.14.0/30
+        description: "P04 <-> P02 diagonal link"
+      - name: p04-pe03
+        ip: 10.0.25.2/30
+        peer: pe03
+        peer_ip: 10.0.25.1
+        link_subnet: 10.0.25.0/30
+        description: "P04 <-> PE03 (dual-homed)"
+
+# ----------------------------------------------------------------
+# PE-Routers (Provider Edge Routers)
+# Chức năng: VPLS endpoints — OSPF + LDP + iBGP (full-mesh PE)
+# Cung cấp WAN handoff cho CE routers tại chi nhánh
+# ----------------------------------------------------------------
+pe_routers:
+  - name: pe01
+    loopback: 10.0.0.11/32
+    description: "Provider Edge PE01 - serves Branch 1 (ce01)"
+    frr_config: "configs/backbone/frr/pe01.conf"
+    bgp_neighbors:
+      - ip: 10.0.0.12
+        peer_name: pe02
+        description: "iBGP to PE02 (VPLS signaling)"
+      - ip: 10.0.0.13
+        peer_name: pe03
+        description: "iBGP to PE03 (VPLS signaling)"
+    interfaces:
+      - name: pe01-p01
+        ip: 10.0.20.1/30
+        peer: p01
+        peer_ip: 10.0.20.2
+        link_subnet: 10.0.20.0/30
+        description: "PE01 -> P01 (primary path)"
+      - name: pe01-p02
+        ip: 10.0.21.1/30
+        peer: p02
+        peer_ip: 10.0.21.2
+        link_subnet: 10.0.21.0/30
+        description: "PE01 -> P02 (alternate path)"
+      - name: pe01-ce01
+        ip: 10.100.1.1/30
+        peer: ce01
+        peer_ip: 10.100.1.2
+        link_subnet: 10.100.1.0/30
+        description: "PE01 <-> CE01 WAN handoff (Branch 1)"
+        wan_link: true
+        customer: branch1
+        vpls_ac: true             # VPLS Attachment Circuit
+
+  - name: pe02
+    loopback: 10.0.0.12/32
+    description: "Provider Edge PE02 - serves Branch 2 (ce02)"
+    frr_config: "configs/backbone/frr/pe02.conf"
+    bgp_neighbors:
+      - ip: 10.0.0.11
+        peer_name: pe01
+        description: "iBGP to PE01 (VPLS signaling)"
+      - ip: 10.0.0.13
+        peer_name: pe03
+        description: "iBGP to PE03 (VPLS signaling)"
+    interfaces:
+      - name: pe02-p02
+        ip: 10.0.22.1/30
+        peer: p02
+        peer_ip: 10.0.22.2
+        link_subnet: 10.0.22.0/30
+        description: "PE02 -> P02 (primary path)"
+      - name: pe02-p03
+        ip: 10.0.23.1/30
+        peer: p03
+        peer_ip: 10.0.23.2
+        link_subnet: 10.0.23.0/30
+        description: "PE02 -> P03 (alternate path)"
+      - name: pe02-ce02
+        ip: 10.100.2.1/30
+        peer: ce02
+        peer_ip: 10.100.2.2
+        link_subnet: 10.100.2.0/30
+        description: "PE02 <-> CE02 WAN handoff (Branch 2)"
+        wan_link: true
+        customer: branch2
+        vpls_ac: true
+
+  - name: pe03
+    loopback: 10.0.0.13/32
+    description: "Provider Edge PE03 - serves Branch 3 (ce03)"
+    frr_config: "configs/backbone/frr/pe03.conf"
+    bgp_neighbors:
+      - ip: 10.0.0.11
+        peer_name: pe01
+        description: "iBGP to PE01 (VPLS signaling)"
+      - ip: 10.0.0.12
+        peer_name: pe02
+        description: "iBGP to PE02 (VPLS signaling)"
+    interfaces:
+      - name: pe03-p03
+        ip: 10.0.24.1/30
+        peer: p03
+        peer_ip: 10.0.24.2
+        link_subnet: 10.0.24.0/30
+        description: "PE03 -> P03 (primary path)"
+      - name: pe03-p04
+        ip: 10.0.25.1/30
+        peer: p04
+        peer_ip: 10.0.25.2
+        link_subnet: 10.0.25.0/30
+        description: "PE03 -> P04 (alternate path)"
+      - name: pe03-ce03
+        ip: 10.100.3.1/30
+        peer: ce03
+        peer_ip: 10.100.3.2
+        link_subnet: 10.100.3.0/30
+        description: "PE03 <-> CE03 WAN handoff (Branch 3)"
+        wan_link: true
+        customer: branch3
+        vpls_ac: true
+
+# ----------------------------------------------------------------
+# WAN Links Summary (PE <-> CE handoff)
+# ----------------------------------------------------------------
+wan_links:
+  - pe: pe01
+    ce: ce01
+    pe_ip: 10.100.1.1/30
+    ce_ip: 10.100.1.2/30
+    subnet: 10.100.1.0/30
+    bw: 100
+    delay: 5ms
+    customer_name: "Chi nhánh 1"
+  - pe: pe02
+    ce: ce02
+    pe_ip: 10.100.2.1/30
+    ce_ip: 10.100.2.2/30
+    subnet: 10.100.2.0/30
+    bw: 100
+    delay: 5ms
+    customer_name: "Chi nhánh 2"
+  - pe: pe03
+    ce: ce03
+    pe_ip: 10.100.3.1/30
+    ce_ip: 10.100.3.2/30
+    subnet: 10.100.3.0/30
+    bw: 100
+    delay: 5ms
+    customer_name: "Chi nhánh 3"
+
+# ----------------------------------------------------------------
+# P-P Backbone Links
+# ----------------------------------------------------------------
+backbone_links:
+  - src: p01
+    dst: p02
+    src_intf: p01-eth0
+    dst_intf: p02-eth0
+    bw: 1000
+    delay: 2ms
+  - src: p02
+    dst: p03
+    src_intf: p02-eth1
+    dst_intf: p03-eth0
+    bw: 1000
+    delay: 2ms
+  - src: p03
+    dst: p04
+    src_intf: p03-eth1
+    dst_intf: p04-eth0
+    bw: 1000
+    delay: 2ms
+  - src: p01
+    dst: p03
+    src_intf: p01-eth1
+    dst_intf: p03-eth2
+    bw: 1000
+    delay: 3ms
+    description: "Diagonal link P01-P03"
+  - src: p02
+    dst: p04
+    src_intf: p02-eth2
+    dst_intf: p04-eth1
+    bw: 1000
+    delay: 3ms
+    description: "Diagonal link P02-P04"
+
+# ----------------------------------------------------------------
+# PE-P Links
+# ----------------------------------------------------------------
+pe_p_links:
+  - src: pe01
+    dst: p01
+    src_intf: pe01-p01
+    dst_intf: p01-pe01
+    bw: 1000
+    delay: 1ms
+  - src: pe01
+    dst: p02
+    src_intf: pe01-p02
+    dst_intf: p02-pe01
+    bw: 1000
+    delay: 1ms
+  - src: pe02
+    dst: p02
+    src_intf: pe02-p02
+    dst_intf: p02-pe02
+    bw: 1000
+    delay: 1ms
+  - src: pe02
+    dst: p03
+    src_intf: pe02-p03
+    dst_intf: p03-pe02
+    bw: 1000
+    delay: 1ms
+  - src: pe03
+    dst: p03
+    src_intf: pe03-p03
+    dst_intf: p03-pe03
+    bw: 1000
+    delay: 1ms
+  - src: pe03
+    dst: p04
+    src_intf: pe03-p04
+    dst_intf: p04-pe03
+    bw: 1000
+    delay: 1ms

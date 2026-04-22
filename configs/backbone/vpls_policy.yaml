@@ -1,0 +1,169 @@
+# ============================================================
+# configs/backbone/vpls_policy.yaml
+# VPLS Service Policy — ISP MPLS MAN
+#
+# Công nghệ: VPLS (Virtual Private LAN Service) theo RFC 4762
+# Phương thức signaling: LDP (Martini mode) + BGP (EVPN auto-discovery)
+# Mục đích: Kết nối L2 trong suốt giữa 3 chi nhánh qua MPLS backbone
+#
+# Mô hình Full-Mesh VPLS:
+#   PE01 <--pw--> PE02 (pseudowire id 100)
+#   PE01 <--pw--> PE03 (pseudowire id 101)
+#   PE02 <--pw--> PE03 (pseudowire id 102)
+# ============================================================
+
+vpls_instance:
+  name: "BRANCH-VPLS"
+  vpn_id: 100
+  description: "VPLS kết nối liên chi nhánh - MAN service"
+  mode: "full-mesh"             # Full mesh pseudowires giữa tất cả PE
+  mtu: 1500
+
+# ----------------------------------------------------------------
+# BGP L2VPN EVPN Parameters (signaling)
+# ----------------------------------------------------------------
+bgp_l2vpn:
+  rd: "65000:100"               # Route Distinguisher
+  rt_export: "65000:100"        # Route Target export
+  rt_import: "65000:100"        # Route Target import
+  vni: 100                      # VNI cho EVPN
+
+# ----------------------------------------------------------------
+# VPLS Members — Mỗi PE kết nối 1 CE (Attachment Circuit)
+# ----------------------------------------------------------------
+members:
+  - pe: pe01
+    ce: ce01
+    ac_interface: pe01-ce01     # Attachment Circuit interface
+    ce_config: "configs/branch1/ce01.conf"
+    site_id: 1
+    customer: "Chi nhánh 1 - Flat Network"
+    branch_subnets:
+      - 10.1.0.0/24
+
+  - pe: pe02
+    ce: ce02
+    ac_interface: pe02-ce02
+    ce_config: "configs/branch2/ce02.conf"
+    site_id: 2
+    customer: "Chi nhánh 2 - Three-Tier Network"
+    branch_subnets:
+      - 10.2.10.0/24
+      - 10.2.20.0/24
+      - 10.2.30.0/24
+
+  - pe: pe03
+    ce: ce03
+    ac_interface: pe03-ce03
+    ce_config: "configs/branch3/ce03.conf"
+    site_id: 3
+    customer: "Chi nhánh 3 - Spine-Leaf Data Center"
+    branch_subnets:
+      - 10.3.0.0/16
+
+# ----------------------------------------------------------------
+# Pseudowire Configuration (LDP Martini mode)
+# Mỗi cặp PE cần 1 pseudowire (full-mesh)
+# ----------------------------------------------------------------
+pseudowires:
+  - id: 100
+    src_pe: pe01
+    src_loopback: 10.0.0.11
+    dst_pe: pe02
+    dst_loopback: 10.0.0.12
+    description: "PW PE01 <-> PE02"
+
+  - id: 101
+    src_pe: pe01
+    src_loopback: 10.0.0.11
+    dst_pe: pe03
+    dst_loopback: 10.0.0.13
+    description: "PW PE01 <-> PE03"
+
+  - id: 102
+    src_pe: pe02
+    src_loopback: 10.0.0.12
+    dst_pe: pe03
+    dst_loopback: 10.0.0.13
+    description: "PW PE02 <-> PE03"
+
+# ----------------------------------------------------------------
+# Linux Bridge VPLS (Fallback nếu FRR VPLS không khả dụng)
+# Triển khai bằng GRE tunnel + Linux bridge trên mỗi PE
+# ----------------------------------------------------------------
+linux_vpls_fallback:
+  enabled: true                 # Dùng khi FRR không hỗ trợ VPLS
+  method: "gre_bridge"          # Options: gre_bridge | vxlan_bridge
+  bridge_name: "vpls-br"
+  tunnels:
+    - name: gre-pe01-pe02
+      local_pe: pe01
+      remote_pe: pe02
+      local_ip: 10.0.0.11
+      remote_ip: 10.0.0.12
+      key: 100
+    - name: gre-pe01-pe03
+      local_pe: pe01
+      remote_pe: pe03
+      local_ip: 10.0.0.11
+      remote_ip: 10.0.0.13
+      key: 101
+    - name: gre-pe02-pe03
+      local_pe: pe02
+      remote_pe: pe03
+      local_ip: 10.0.0.12
+      remote_ip: 10.0.0.13
+      key: 102
+
+# ----------------------------------------------------------------
+# Inter-Branch Routing (L3 routing qua VPLS domain)
+# CE routers tại chi nhánh dùng OSPF redistribute connected
+# để quảng bá subnet về các PE và đến các chi nhánh khác
+# ----------------------------------------------------------------
+inter_branch_routing:
+  protocol: ospf
+  area: "0.0.0.0"
+  # Các prefix được quảng bá liên chi nhánh
+  advertised_prefixes:
+    branch1:
+      - 10.1.0.0/24
+    branch2:
+      - 10.2.10.0/24
+      - 10.2.20.0/24
+      - 10.2.30.0/24
+    branch3:
+      - 10.3.0.0/16
+
+# ----------------------------------------------------------------
+# Test Matrix cho inter-branch connectivity
+# ----------------------------------------------------------------
+tests:
+  description: "Kiểm tra kết nối liên chi nhánh qua MPLS VPLS"
+  inter_branch_pairs:
+    - src: pc01          # Branch 1
+      dst: lab01         # Branch 2
+      src_ip: 10.1.0.11
+      dst_ip: 10.2.10.11
+    - src: pc01          # Branch 1
+      dst: web01         # Branch 3
+      src_ip: 10.1.0.11
+      dst_ip: 10.3.10.11
+    - src: lab01         # Branch 2
+      dst: web01         # Branch 3
+      src_ip: 10.2.10.11
+      dst_ip: 10.3.10.11
+    - src: admin01       # Branch 2
+      dst: db01          # Branch 3
+      src_ip: 10.2.20.11
+      dst_ip: 10.3.30.11
+  mpls_path_verification:
+    - description: "Verify MPLS label switching P01->P02->PE02"
+      traceroute: true
+      src: pc01
+      dst: lab01
+  ldp_verification:
+    - check: "ldp_sessions"
+      expected_sessions: 6      # PE01-P01, PE01-P02, PE02-P02, PE02-P03, PE03-P03, PE03-P04
+  bgp_verification:
+    - check: "bgp_sessions"
+      expected: 3               # Full-mesh: PE01-PE02, PE01-PE03, PE02-PE03

@@ -1,0 +1,133 @@
+# ============================================================
+# configs/branch1/ip_plan.yaml
+# Chi nhánh 1 — Flat Network (Mạng Phẳng)
+# Single broadcast domain, không VLAN, Daisy-chain switches
+# ============================================================
+
+branch: branch1
+description: "Flat Network - Single Broadcast Domain (No VLAN)"
+topology_file: "topologies/branch1_flat.py"
+
+# ----------------------------------------------------------------
+# CE Router — do ISP (PE01) cung cấp và triển khai cấu hình
+# Interface ce01-pe01 chỉ hoạt động trong full_topology (MPLS mode)
+# Interface ce01-sw01 là gateway LAN tại chi nhánh
+# ----------------------------------------------------------------
+ce_router:
+  name: ce01
+  loopback: 10.0.0.21/32
+  ip_forward: true
+  mpls_enable: false
+  interfaces:
+    - name: ce01-pe01
+      ip: 10.100.1.2/30
+      description: "WAN uplink to PE01 (ISP)"
+      mode: wan                    # Chỉ dùng trong full topology
+    - name: ce01-sw01
+      ip: 10.1.0.1/24
+      description: "LAN Gateway - Branch 1"
+      mode: lan
+  static_routes:
+    - prefix: 0.0.0.0/0
+      via: 10.100.1.1
+      description: "Default route toward ISP (PE01)"
+    - prefix: 10.1.0.0/24
+      via: ""                      # directly connected, no via needed
+      description: "LAN subnet (auto - connected)"
+
+# ----------------------------------------------------------------
+# Switches — L2 only, standalone mode (không cần OpenFlow controller)
+# ----------------------------------------------------------------
+switches:
+  - name: sw01
+    mode: standalone
+    description: "Access Switch 1 - upstream to CE01"
+  - name: sw02
+    mode: standalone
+    description: "Access Switch 2 - daisy-chain from SW01"
+
+# ----------------------------------------------------------------
+# Hosts — PC01..PC04 cùng subnet 10.1.0.0/24
+# ----------------------------------------------------------------
+hosts:
+  - name: pc01
+    ip: 10.1.0.11/24
+    gateway: 10.1.0.1
+    connected_to: sw01
+    description: "PC tại văn phòng 1"
+  - name: pc02
+    ip: 10.1.0.12/24
+    gateway: 10.1.0.1
+    connected_to: sw01
+    description: "PC tại văn phòng 2"
+  - name: pc03
+    ip: 10.1.0.13/24
+    gateway: 10.1.0.1
+    connected_to: sw02
+    description: "PC tại văn phòng 3"
+  - name: pc04
+    ip: 10.1.0.14/24
+    gateway: 10.1.0.1
+    connected_to: sw02
+    description: "PC tại văn phòng 4"
+
+# ----------------------------------------------------------------
+# Links — Kết nối vật lý (dùng bởi runner để build topology)
+# ----------------------------------------------------------------
+links:
+  # CE -> LAN Switch
+  - src: ce01
+    dst: sw01
+    src_intf: ce01-sw01
+    bw: 100
+    delay: 1ms
+    description: "CE01 LAN port to SW01 uplink"
+
+  # Switch daisy-chain
+  - src: sw01
+    dst: sw02
+    bw: 100
+    delay: 1ms
+    description: "SW01 to SW02 uplink (daisy-chain)"
+
+  # SW01 access ports
+  - src: sw01
+    dst: pc01
+    bw: 100
+    delay: 1ms
+  - src: sw01
+    dst: pc02
+    bw: 100
+    delay: 1ms
+
+  # SW02 access ports
+  - src: sw02
+    dst: pc03
+    bw: 100
+    delay: 1ms
+  - src: sw02
+    dst: pc04
+    bw: 100
+    delay: 1ms
+
+# ----------------------------------------------------------------
+# Test Matrix — Danh sách ping tests cho connectivity_test.py
+# ----------------------------------------------------------------
+tests:
+  description: "Kiểm tra kết nối nội bộ Branch 1"
+  intra_subnet:
+    - [pc01, pc02]
+    - [pc01, pc03]
+    - [pc01, pc04]
+    - [pc02, pc03]
+    - [pc02, pc04]
+    - [pc03, pc04]
+  gateway_reachability:
+    - host: pc01
+      target: 10.1.0.1
+    - host: pc02
+      target: 10.1.0.1
+    - host: pc03
+      target: 10.1.0.1
+    - host: pc04
+      target: 10.1.0.1

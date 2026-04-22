@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""
+tools/frr_manager.py
+====================
+FRR (FRRouting) Deployment Manager
+
+Triển khai file cấu hình FRR (.conf) vào các Mininet nodes đang chạy.
+Thay thế frr_deploy.py cũ với kiến trúc rõ ràng hơn.
+
+Chức năng chính:
+  - deploy_to_node()     : Deploy FRR config vào 1 node
+  - deploy_backbone()    : Deploy cho tất cả P + PE routers
+  - push_ce_config()     : ISP đẩy CE config xuống chi nhánh
+  - wait_convergence()   : Chờ OSPF/LDP hội tụ
+  - verify_ospf()        : Kiểm tra OSPF neighbors
+  - verify_ldp()         : Kiểm tra LDP sessions
+  - verify_bgp()         : Kiểm tra BGP sessions
+  - setup_vpls_bridge()  : Setup Linux bridge VPLS (fallback)
+
+Yêu cầu: FRR đã được cài (sudo apt install -y frr frr-pythontools)
+"""
+
+import os
+import sys
+import time
+import subprocess
+from mininet.log import info, warn, error
+
+
+# Thư mục gốc của project (parent của tools/)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+# Danh sách P-Routers (chạy OSPF + LDP)
+P_ROUTERS  = ['p01', 'p02', 'p03', 'p04']
+
+# Danh sách PE-Routers (chạy OSPF + LDP + BGP + VPLS)
+PE_ROUTERS = ['pe01', 'pe02', 'pe03']
+
+# Danh sách CE-Routers (OSPF + static, config do ISP cung cấp)
+CE_ROUTERS = ['ce01', 'ce02', 'ce03']
+
+# Map: router -> file config FRR
+BACKBONE_CONFIGS = {
+    'p01':  'configs/backbone/frr/p01.conf',
+    'p02':  'configs/backbone/frr/p02.conf',
+    'p03':  'configs/backbone/frr/p03.conf',
+    'p04':  'configs/backbone/frr/p04.conf',
+    'pe01': 'configs/backbone/frr/pe01.conf',
+    'pe02': 'configs/backbone/frr/pe02.conf',
+    'pe03': 'configs/backbone/frr/pe03.conf',
+}
+
+CE_CONFIGS = {
+    'ce01': 'configs/branch1/ce01.conf',
+    'ce02': 'configs/branch2/ce02.conf',
+    'ce03': 'configs/branch3/ce03.conf',
+}
+
+
+class FRRManager:
+    """
+    Quản lý triển khai FRR vào Mininet nodes.
+    
+    Sử dụng:
+        mgr = FRRManager(net)
+        mgr.deploy_backbone()           # Triển khai P + PE routers
+        mgr.push_ce_configs()           # ISP đẩy config xuống CE
+        mgr.wait_convergence(timeout=30)
+        mgr.verify_all()
+    """
+
+    def __init__(self, net, configs_root=None):
+        """
+        Args:
+            net         : Mininet network object
+            configs_root: Thư mục gốc chứa configs/ (mặc định = PROJECT_ROOT)
+        """
+        self.net = net
+        self.configs_root = configs_root or PROJECT_ROOT
+        self._check_frr_installed()
+
+    def _check_frr_installed(self):
+        """Kiểm tra FRR đã cài đặt chưa."""
+        result = subprocess.run(['which', 'zebra'], capture_output=True)
+        if result.returncode != 0:
+            result2 = subprocess.run(
+                ['ls', '/usr/lib/frr/zebra'], capture_output=True
+            )
+            if result2.returncode != 0:
+                warn(
+                    "[FRRManager] FRR chưa được cài đặt!\n"
+                    "             Chạy: sudo apt install -y frr frr-pythontools\n"
+                    "             Tiếp tục với static routes fallback...\n"
+                )
+                self.frr_available = False
+                return
+        self.frr_available = True
+        info("[FRRManager] FRR detected OK\n")
+
+    # ------------------------------------------------------------------
+    # Core: Deploy FRR to a single node
+    # ------------------------------------------------------------------
+
+    def deploy_to_node(self, node_name, conf_path):
+        """
+        Deploy FRR config vào một Mininet node.
+        
+        Quy trình:
+        1. Tạo thư mục /etc/frr trong namespace của node
+        2. Copy config file vào /etc/frr/frr.conf
+        3. Tạo daemons file phù hợp 
+        4. Khởi động FRR daemons
+        
+        Args:
+            node_name: tên node trong Mininet (ví dụ: 'p01')
+            conf_path: đường dẫn đến file .conf (tương đối từ configs_root)
+        """
+        if not self.frr_available:
+            warn(f"  [SKIP] FRR unavailable, skipping {node_name}\n")
+            return False
+
+        full_conf_path = os.path.join(self.configs_root, conf_path)
+        if not os.path.exists(full_conf_path):
+            warn(f"  [SKIP] Config không tồn tại: {full_conf_path}\n")
+            return False
+
+        node = self.net.get(node_name)
+        if node is None:
+            warn(f"  [SKIP] Node {node_name} không tồn tại trong topology\n")
+            return False
+
+        info(f"  [FRR] Deploying to {node_name}...\n")
+
+        # Đọc config content
+        with open(full_conf_path, 'r') as f:
+            conf_content = f.read()
+
+        # Tạo thư mục FRR
+        node.cmd('mkdir -p /etc/frr /var/run/frr /var/log/frr')
+        node.cmd('chmod 755 /etc/frr /var/run/frr /var/log/frr')
+
+        # Xác định daemons cần chạy dựa theo loại router
+        daemons_content = self._get_daemons_config(node_name)
+        node.cmd(f"printf '{daemons_content}' > /etc/frr/daemons")
+
+        # Write config file (dùng python để tránh shell escape issues)
+        tmp_conf = f'/tmp/frr_{node_name}.conf'
+        with open(tmp_conf, 'w') as f:
+            f.write(conf_content)
+        node.cmd(f'cp {tmp_conf} /etc/frr/frr.conf')
+
+        # Set permissions
+        node.cmd('chown -R frr:frr /etc/frr/ 2>/dev/null || true')
+        node.cmd('chmod 640 /etc/frr/frr.conf')
+
+        # Khởi động daemons
+        return self._start_frr_daemons(node, node_name)
+
+    def _get_daemons_config(self, node_name):
+        """Trả về nội dung file /etc/frr/daemons phù hợp với loại router."""
+        base = (
+            "zebra=yes\n"
+            "bgpd=no\n"
+            "ospfd=yes\n"
+            "ospf6d=no\n"
+            "ripd=no\n"
+            "ripngd=no\n"
+            "isisd=no\n"
+            "ldpd=yes\n"
+            "nhrpd=no\n"
+            "eigrpd=no\n"
+            "sharpd=no\n"
+            "staticd=yes\n"
+            "pbrd=no\n"
+            "bfdd=no\n"
+            "fabricd=no\n"
+            "vrrpd=no\n"
+            "vtysh_enable=yes\n"
+        )
+        if node_name in PE_ROUTERS:
+            # PE cần thêm BGP
+            return base.replace("bgpd=no", "bgpd=yes")
+        if node_name in CE_ROUTERS:
+            # CE không cần LDP
+            return base.replace("ldpd=yes", "ldpd=no")
+        return base  # P routers: OSPF + LDP
+
+    def _start_frr_daemons(self, node, node_name):
+        """Khởi động FRR daemons trong network namespace của node."""
+        # Thử dùng frrinit.sh (phương pháp chuẩn)
+        result = node.cmd('/usr/lib/frr/frrinit.sh start 2>&1')
+        if 'failed' not in result.lower() and 'error' not in result.lower():
+            info(f"     [OK] FRR started on {node_name} (frrinit.sh)\n")
+            return True
+
+        # Fallback: khởi động từng daemon thủ công
+        info(f"     [INFO] Fallback: khởi động daemons thủ công cho {node_name}\n")
+        node.cmd('/usr/lib/frr/zebra -d -f /etc/frr/frr.conf '
+                 '-i /var/run/frr/zebra.pid -z /var/run/frr/zserv.api 2>/dev/null')
+        time.sleep(0.5)
+        node.cmd('/usr/lib/frr/ospfd -d -f /etc/frr/frr.conf '
+                 '-i /var/run/frr/ospfd.pid -z /var/run/frr/zserv.api 2>/dev/null')
+
+        if node_name in P_ROUTERS or node_name in PE_ROUTERS:
+            node.cmd('/usr/lib/frr/ldpd -d -f /etc/frr/frr.conf '
+                     '-i /var/run/frr/ldpd.pid -z /var/run/frr/zserv.api 2>/dev/null')
+
+        if node_name in PE_ROUTERS:
+            node.cmd('/usr/lib/frr/bgpd -d -f /etc/frr/frr.conf '
+                     '-i /var/run/frr/bgpd.pid -z /var/run/frr/zserv.api 2>/dev/null')
+
+        info(f"     [OK] FRR daemons started on {node_name}\n")
+        return True
+
+    # ------------------------------------------------------------------
+    # High-level: Deploy groups
+    # ------------------------------------------------------------------
+
+    def deploy_backbone(self):
+        """Deploy FRR cho tất cả P và PE routers trong backbone."""
+        info('\n*** [FRRManager] === Triển khai FRR Backbone ===\n')
+
+        # Deploy P-Routers trước
+        info('  [*] P-Routers (OSPF + LDP):\n')
+        for router in P_ROUTERS:
+            conf = BACKBONE_CONFIGS.get(router)
+            if conf:
+                self.deploy_to_node(router, conf)
+
+        # Deploy PE-Routers
+        info('  [*] PE-Routers (OSPF + LDP + BGP + VPLS):\n')
+        for router in PE_ROUTERS:
+            conf = BACKBONE_CONFIGS.get(router)
+            if conf:
+                self.deploy_to_node(router, conf)
+
+        info('*** [FRRManager] Backbone deployment hoàn tất\n')
+
+    def push_ce_configs(self):
+        """
+        ISP đẩy cấu hình FRR xuống CE routers tại các chi nhánh.
+        
+        Đây là bước mô phỏng quy trình ISP cung cấp dịch vụ:
+        PE router biết CE config → deploy config xuống CE → CE tự động
+        thiết lập kết nối OSPF với PE → quảng bá LAN subnets lên backbone.
+        """
+        info('\n*** [FRRManager] === ISP Push CE Configs ===\n')
+        info('    (Mô phỏng ISP triển khai config xuống thiết bị CE tại chi nhánh)\n')
+
+        for ce_name, conf_path in CE_CONFIGS.items():
+            info(f'  [ISP -> {ce_name}] Deploying customer edge config...\n')
+            self.deploy_to_node(ce_name, conf_path)
+
+        info('*** [FRRManager] CE config deployment hoàn tất\n')
+
+    # ------------------------------------------------------------------
+    # VPLS: Linux Bridge fallback (khi FRR VPLS không khả dụng)
+    # ------------------------------------------------------------------
+
+    def setup_vpls_bridge(self, vpls_config):
+        """
+        Thiết lập VPLS bằng GRE tunnel + Linux bridge trên PE routers.
+        
+        Phương án fallback khi FRR không hỗ trợ native VPLS.
+        Mỗi PE tạo GRE tunnel đến PE khác, bridge lại với AC interface.
+        
+        Args:
+            vpls_config: dict từ vpls_policy.yaml
+        """
+        if not vpls_config.get('linux_vpls_fallback', {}).get('enabled', False):
+            info('[FRRManager] Linux VPLS fallback disabled, skipping\n')
+            return
+
+        info('\n*** [FRRManager] === Setup Linux Bridge VPLS ===\n')
+        fallback_cfg = vpls_config['linux_vpls_fallback']
+        bridge_name  = fallback_cfg.get('bridge_name', 'vpls-br')
+
+        # VPLS member map: pe_name -> ac_interface
+        member_map = {
+            m['pe']: m['ac_interface']
+            for m in vpls_config.get('members', [])
+        }
+
+        # Tạo GRE tunnels và bridge trên mỗi PE
+        for tunnel_cfg in fallback_cfg.get('tunnels', []):
+            local_pe  = tunnel_cfg['local_pe']
+            remote_pe = tunnel_cfg['remote_pe']
+            local_ip  = tunnel_cfg['local_ip']
+            remote_ip = tunnel_cfg['remote_ip']
+            gre_key   = tunnel_cfg.get('key', 100)
+            tun_name  = tunnel_cfg['name']
+
+            node = self.net.get(local_pe)
+            if node is None:
+                continue
+
+            info(f'  [+] GRE tunnel: {local_pe} -> {remote_pe} (key={gre_key})\n')
+
+            # Tạo GRE tunnel interface
+            node.cmd(f'ip tunnel add {tun_name} mode gre '
+                     f'local {local_ip} remote {remote_ip} key {gre_key} 2>/dev/null || true')
+            node.cmd(f'ip link set {tun_name} up')
+
+        # Tạo bridge và add interfaces trên mỗi PE
+        for pe_name, ac_intf in member_map.items():
+            node = self.net.get(pe_name)
+            if node is None:
+                continue
+
+            info(f'  [+] Bridge {bridge_name} on {pe_name} (AC: {ac_intf})\n')
+
+            # Tạo Linux bridge
+            node.cmd(f'ip link add {bridge_name} type bridge 2>/dev/null || true')
+            node.cmd(f'ip link set {bridge_name} up')
+
+            # Add AC interface vào bridge
+            node.cmd(f'ip link set {ac_intf} master {bridge_name} 2>/dev/null || true')
+
+            # Add GRE tunnels vào bridge
+            for tunnel_cfg in fallback_cfg.get('tunnels', []):
+                if tunnel_cfg['local_pe'] == pe_name:
+                    tun_name = tunnel_cfg['name']
+                    node.cmd(f'ip link set {tun_name} master {bridge_name} 2>/dev/null || true')
+                    info(f"       Added tunnel {tun_name} to bridge\n")
+
+        info('*** [FRRManager] VPLS Bridge setup hoàn tất\n')
+
+    # ------------------------------------------------------------------
+    # Verification
+    # ------------------------------------------------------------------
+
+    def wait_convergence(self, timeout=30):
+        """Chờ OSPF và LDP hội tụ."""
+        info(f'\n*** [FRRManager] Chờ OSPF/LDP hội tụ ({timeout}s)...\n')
+        for remaining in range(timeout, 0, -5):
+            info(f'    ... {remaining}s còn lại\n')
+            time.sleep(5)
+        info('*** [FRRManager] Done waiting\n')
+
+    def verify_ospf(self, router_names=None):
+        """Kiểm tra OSPF neighbors trên các routers."""
+        routers = router_names or (P_ROUTERS + PE_ROUTERS)
+        info('\n*** [FRRManager] === Kiểm tra OSPF Neighbors ===\n')
+        all_ok = True
+        for name in routers:
+            node = self.net.get(name)
+            if node is None:
+                continue
+            result = node.cmd('vtysh -c "show ip ospf neighbor" 2>/dev/null || '
+                              'echo "OSPF not running"')
+            info(f'  [{name}] OSPF neighbors:\n')
+            for line in result.strip().split('\n'):
+                if line.strip():
+                    info(f'    {line}\n')
+            if 'Full' not in result and 'OSPF' not in result:
+                warn(f'  [WARN] {name}: Không có OSPF neighbor ở trạng thái Full\n')
+                all_ok = False
+        return all_ok
+
+    def verify_ldp(self, router_names=None):
+        """Kiểm tra LDP sessions."""
+        routers = router_names or (P_ROUTERS + PE_ROUTERS)
+        info('\n*** [FRRManager] === Kiểm tra LDP Sessions ===\n')
+        all_ok = True
+        for name in routers:
+            node = self.net.get(name)
+            if node is None:
+                continue
+            result = node.cmd('vtysh -c "show mpls ldp neighbor" 2>/dev/null || '
+                              'echo "LDP not running"')
+            info(f'  [{name}] LDP sessions:\n')
+            for line in result.strip().split('\n'):
+                if line.strip():
+                    info(f'    {line}\n')
+        return all_ok
+
+    def verify_bgp(self, pe_names=None):
+        """Kiểm tra BGP sessions giữa PE routers."""
+        pes = pe_names or PE_ROUTERS
+        info('\n*** [FRRManager] === Kiểm tra BGP Sessions ===\n')
+        all_ok = True
+        for name in pes:
+            node = self.net.get(name)
+            if node is None:
+                continue
+            result = node.cmd('vtysh -c "show bgp l2vpn evpn summary" 2>/dev/null || '
+                              'vtysh -c "show bgp summary" 2>/dev/null || '
+                              'echo "BGP not running"')
+            info(f'  [{name}] BGP summary:\n')
+            for line in result.strip().split('\n'):
+                if line.strip():
+                    info(f'    {line}\n')
+            if 'Established' not in result and 'BGP' not in result:
+                warn(f'  [WARN] {name}: BGP chưa Established\n')
+                all_ok = False
+        return all_ok
+
+    def verify_mpls_labels(self, router_names=None):
+        """Kiểm tra MPLS label table."""
+        routers = router_names or (P_ROUTERS + PE_ROUTERS)
+        info('\n*** [FRRManager] === Kiểm tra MPLS Labels ===\n')
+        for name in routers:
+            node = self.net.get(name)
+            if node is None:
+                continue
+            result = node.cmd('ip -M route 2>/dev/null || echo "MPLS not available"')
+            info(f'  [{name}] MPLS routes:\n')
+            for line in result.strip().split('\n')[:5]:  # Show first 5 lines
+                if line.strip():
+                    info(f'    {line}\n')
+
+    def verify_all(self):
+        """Chạy tất cả verification checks."""
+        info('\n*** [FRRManager] === Verification Report ===\n')
+        ospf_ok = self.verify_ospf()
+        ldp_ok  = self.verify_ldp()
+        bgp_ok  = self.verify_bgp()
+        self.verify_mpls_labels()
+
+        info('\n*** [FRRManager] Summary:\n')
+        info(f'    OSPF: {"OK" if ospf_ok else "FAIL"}\n')
+        info(f'    LDP:  {"OK" if ldp_ok  else "FAIL"}\n')
+        info(f'    BGP:  {"OK" if bgp_ok  else "FAIL"}\n')
+        return ospf_ok and ldp_ok and bgp_ok

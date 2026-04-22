@@ -1,0 +1,272 @@
+# ============================================================
+# configs/branch2/ip_plan.yaml
+# Chi nhánh 2 — Three-Tier Network (Mạng 3 Lớp)
+# Core → Distribution → Access, Inter-VLAN routing qua CE02
+# ============================================================
+
+branch: branch2
+description: "Three-Tier Network - Core/Distribution/Access with VLAN Segmentation"
+topology_file: "topologies/branch2_3tier.py"
+
+# ----------------------------------------------------------------
+# CE Router — do ISP (PE02) cung cấp và triển khai cấu hình
+# CE02 đóng vai trò Inter-VLAN Router cho 3 VLAN
+# Mỗi interface riêng = gateway cho 1 VLAN
+# ----------------------------------------------------------------
+ce_router:
+  name: ce02
+  loopback: 10.0.0.22/32
+  ip_forward: true
+  mpls_enable: false
+  interfaces:
+    - name: ce02-pe02
+      ip: 10.100.2.2/30
+      description: "WAN uplink to PE02 (ISP)"
+      mode: wan
+    - name: ce02-c01
+      ip: 10.2.10.1/24
+      description: "Gateway VLAN 10 - LAB Network"
+      mode: lan
+      vlan: 10
+    - name: ce02-c02
+      ip: 10.2.20.1/24
+      description: "Gateway VLAN 20 - ADMIN Network"
+      mode: lan
+      vlan: 20
+    - name: ce02-c03
+      ip: 10.2.30.1/24
+      description: "Gateway VLAN 30 - GUEST Network"
+      mode: lan
+      vlan: 30
+  static_routes:
+    - prefix: 0.0.0.0/0
+      via: 10.100.2.1
+      description: "Default route toward ISP (PE02)"
+
+# ----------------------------------------------------------------
+# VLAN Plan
+# ----------------------------------------------------------------
+vlans:
+  - id: 10
+    name: LAB
+    subnet: 10.2.10.0/24
+    gateway: 10.2.10.1
+    gateway_intf: ce02-c01
+    description: "Phòng thực hành"
+  - id: 20
+    name: ADMIN
+    subnet: 10.2.20.0/24
+    gateway: 10.2.20.1
+    gateway_intf: ce02-c02
+    description: "Phòng quản trị"
+  - id: 30
+    name: GUEST
+    subnet: 10.2.30.0/24
+    gateway: 10.2.30.1
+    gateway_intf: ce02-c03
+    description: "Mạng khách"
+
+# ----------------------------------------------------------------
+# Switches — 3-Tier: Core / Distribution / Access
+# ----------------------------------------------------------------
+switches:
+  # Core Layer
+  - name: core01
+    layer: core
+    mode: standalone
+    description: "Core Switch 1 (primary uplink to CE02)"
+  - name: core02
+    layer: core
+    mode: standalone
+    description: "Core Switch 2 (redundant uplink to CE02)"
+
+  # Distribution Layer
+  - name: dist01
+    layer: distribution
+    mode: standalone
+    description: "Distribution Switch 1 (LAB + ADMIN uplink)"
+  - name: dist02
+    layer: distribution
+    mode: standalone
+    description: "Distribution Switch 2 (ADMIN + GUEST uplink)"
+
+  # Access Layer
+  - name: access01
+    layer: access
+    mode: standalone
+    vlan: 10
+    description: "Access Switch - LAB VLAN 10"
+  - name: access02
+    layer: access
+    mode: standalone
+    vlan: 20
+    description: "Access Switch - ADMIN VLAN 20"
+  - name: access03
+    layer: access
+    mode: standalone
+    vlan: 30
+    description: "Access Switch - GUEST VLAN 30"
+
+# ----------------------------------------------------------------
+# Hosts
+# ----------------------------------------------------------------
+hosts:
+  # VLAN 10 - LAB
+  - name: lab01
+    ip: 10.2.10.11/24
+    gateway: 10.2.10.1
+    vlan: 10
+    connected_to: access01
+    description: "Máy tính phòng LAB 1"
+  - name: lab02
+    ip: 10.2.10.12/24
+    gateway: 10.2.10.1
+    vlan: 10
+    connected_to: access01
+    description: "Máy tính phòng LAB 2"
+
+  # VLAN 20 - ADMIN
+  - name: admin01
+    ip: 10.2.20.11/24
+    gateway: 10.2.20.1
+    vlan: 20
+    connected_to: access02
+    description: "Máy tính phòng ADMIN 1"
+  - name: admin02
+    ip: 10.2.20.12/24
+    gateway: 10.2.20.1
+    vlan: 20
+    connected_to: access02
+    description: "Máy tính phòng ADMIN 2"
+
+  # VLAN 30 - GUEST
+  - name: guest01
+    ip: 10.2.30.11/24
+    gateway: 10.2.30.1
+    vlan: 30
+    connected_to: access03
+    description: "Máy khách 1"
+  - name: guest02
+    ip: 10.2.30.12/24
+    gateway: 10.2.30.1
+    vlan: 30
+    connected_to: access03
+    description: "Máy khách 2"
+
+# ----------------------------------------------------------------
+# Links
+# ----------------------------------------------------------------
+links:
+  # CE02 -> Core Layer (dual uplink)
+  - src: ce02
+    dst: core01
+    src_intf: ce02-c01
+    bw: 1000
+    delay: 1ms
+    description: "CE02 primary uplink - LAB gateway"
+  - src: ce02
+    dst: core02
+    src_intf: ce02-c02
+    bw: 1000
+    delay: 1ms
+    description: "CE02 secondary uplink - ADMIN gateway"
+  - src: ce02
+    dst: dist02
+    src_intf: ce02-c03
+    bw: 100
+    delay: 1ms
+    description: "CE02 extra link - GUEST gateway direct to DIST02"
+
+  # Core cross-connect
+  - src: core01
+    dst: core02
+    bw: 1000
+    delay: 1ms
+    description: "Core cross-connect (redundancy)"
+
+  # Core -> Distribution (redundant mesh)
+  - src: core01
+    dst: dist01
+    bw: 1000
+    delay: 1ms
+  - src: core01
+    dst: dist02
+    bw: 1000
+    delay: 1ms
+  - src: core02
+    dst: dist01
+    bw: 1000
+    delay: 1ms
+  - src: core02
+    dst: dist02
+    bw: 1000
+    delay: 1ms
+
+  # Distribution -> Access
+  - src: dist01
+    dst: access01
+    bw: 100
+    delay: 1ms
+  - src: dist01
+    dst: access02
+    bw: 100
+    delay: 1ms
+  - src: dist02
+    dst: access02
+    bw: 100
+    delay: 1ms
+  - src: dist02
+    dst: access03
+    bw: 100
+    delay: 1ms
+
+  # Access -> Hosts
+  - src: access01
+    dst: lab01
+    bw: 100
+    delay: 1ms
+  - src: access01
+    dst: lab02
+    bw: 100
+    delay: 1ms
+  - src: access02
+    dst: admin01
+    bw: 100
+    delay: 1ms
+  - src: access02
+    dst: admin02
+    bw: 100
+    delay: 1ms
+  - src: access03
+    dst: guest01
+    bw: 100
+    delay: 1ms
+  - src: access03
+    dst: guest02
+    bw: 100
+    delay: 1ms
+
+# ----------------------------------------------------------------
+# Test Matrix
+# ----------------------------------------------------------------
+tests:
+  description: "Kiểm tra kết nối nội bộ Branch 2 (intra + inter VLAN)"
+  intra_vlan:
+    - vlan: 10
+      pairs: [[lab01, lab02]]
+    - vlan: 20
+      pairs: [[admin01, admin02]]
+    - vlan: 30
+      pairs: [[guest01, guest02]]
+  inter_vlan:
+    # Inter-VLAN routing qua CE02
+    - [lab01, admin01]
+    - [lab01, guest01]
+    - [admin01, guest01]
+  gateway_reachability:
+    - host: lab01
+      target: 10.2.10.1
+    - host: admin01
+      target: 10.2.20.1
+    - host: guest01
+      target: 10.2.30.1

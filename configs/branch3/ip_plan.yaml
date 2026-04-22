@@ -1,0 +1,241 @@
+# ============================================================
+# configs/branch3/ip_plan.yaml
+# Chi nhánh 3 — Spine-Leaf Data Center
+# ECMP fabric, L3 routing giữa các leaf pair
+# ============================================================
+
+branch: branch3
+description: "Spine-Leaf Data Center - ECMP L3 Fabric"
+topology_file: "topologies/branch3_spineleaf.py"
+
+# ----------------------------------------------------------------
+# CE Router — do ISP (PE03) cung cấp và triển khai cấu hình
+# CE03 = Border Leaf Router, kết nối fabric với WAN ISP
+# Dùng /16 supernet để bao gồm tất cả server subnets (10.3.x.0/24)
+# ----------------------------------------------------------------
+ce_router:
+  name: ce03
+  loopback: 10.0.0.23/32
+  ip_forward: true
+  mpls_enable: false
+  interfaces:
+    - name: ce03-pe03
+      ip: 10.100.3.2/30
+      description: "WAN uplink to PE03 (ISP)"
+      mode: wan
+    - name: ce03-leaf01
+      ip: 10.3.0.1/16
+      description: "Fabric gateway - Border Leaf (supernet /16)"
+      mode: lan
+  static_routes:
+    - prefix: 0.0.0.0/0
+      via: 10.100.3.1
+      description: "Default route toward ISP (PE03)"
+    - prefix: 10.3.0.0/16
+      via: ""
+      description: "Server farm supernet (directly connected)"
+
+# ----------------------------------------------------------------
+# Server Subnets (logical grouping, all within 10.3.0.0/16)
+# ----------------------------------------------------------------
+subnets:
+  - name: WEB
+    subnet: 10.3.10.0/24
+    gateway: 10.3.0.1
+    leaf: leaf02
+    description: "Web Server Cluster"
+  - name: DNS
+    subnet: 10.3.20.0/24
+    gateway: 10.3.0.1
+    leaf: leaf03
+    description: "DNS Server Cluster"
+  - name: DB
+    subnet: 10.3.30.0/24
+    gateway: 10.3.0.1
+    leaf: leaf04
+    description: "Database Server Cluster"
+
+# ----------------------------------------------------------------
+# Switches — Spine-Leaf Fabric
+# ----------------------------------------------------------------
+switches:
+  # Spine Layer (no inter-spine link by design)
+  - name: spine01
+    layer: spine
+    mode: standalone
+    description: "Spine Switch 1 - ECMP backbone"
+  - name: spine02
+    layer: spine
+    mode: standalone
+    description: "Spine Switch 2 - ECMP backbone"
+
+  # Leaf Layer
+  - name: leaf01
+    layer: leaf
+    role: border
+    mode: standalone
+    description: "Border Leaf - Uplink to CE03 (WAN)"
+  - name: leaf02
+    layer: leaf
+    role: web
+    mode: standalone
+    description: "ToR Leaf - WEB server rack"
+  - name: leaf03
+    layer: leaf
+    role: dns
+    mode: standalone
+    description: "ToR Leaf - DNS server rack"
+  - name: leaf04
+    layer: leaf
+    role: db
+    mode: standalone
+    description: "ToR Leaf - Database server rack"
+
+# ----------------------------------------------------------------
+# Hosts (Servers)
+# ----------------------------------------------------------------
+hosts:
+  # WEB Servers
+  - name: web01
+    ip: 10.3.10.11/16
+    gateway: 10.3.0.1
+    role: web
+    connected_to: leaf02
+    description: "Web Server 1"
+  - name: web02
+    ip: 10.3.10.12/16
+    gateway: 10.3.0.1
+    role: web
+    connected_to: leaf02
+    description: "Web Server 2"
+
+  # DNS Servers
+  - name: dns01
+    ip: 10.3.20.11/16
+    gateway: 10.3.0.1
+    role: dns
+    connected_to: leaf03
+    description: "DNS Server 1"
+  - name: dns02
+    ip: 10.3.20.12/16
+    gateway: 10.3.0.1
+    role: dns
+    connected_to: leaf03
+    description: "DNS Server 2"
+
+  # DB Servers
+  - name: db01
+    ip: 10.3.30.11/16
+    gateway: 10.3.0.1
+    role: db
+    connected_to: leaf04
+    description: "Database Server 1"
+  - name: db02
+    ip: 10.3.30.12/16
+    gateway: 10.3.0.1
+    role: db
+    connected_to: leaf04
+    description: "Database Server 2"
+
+# ----------------------------------------------------------------
+# Links — ECMP Fabric (mỗi leaf kết nối cả 2 spine)
+# ----------------------------------------------------------------
+links:
+  # CE03 -> Border Leaf
+  - src: ce03
+    dst: leaf01
+    src_intf: ce03-leaf01
+    bw: 1000
+    delay: 1ms
+    description: "WAN handoff - CE03 to Border Leaf01"
+
+  # Border Leaf -> Spines (ECMP uplinks)
+  - src: leaf01
+    dst: spine01
+    bw: 1000
+    delay: 1ms
+  - src: leaf01
+    dst: spine02
+    bw: 1000
+    delay: 1ms
+
+  # LEAF02 (WEB) -> Spines
+  - src: leaf02
+    dst: spine01
+    bw: 1000
+    delay: 1ms
+  - src: leaf02
+    dst: spine02
+    bw: 1000
+    delay: 1ms
+
+  # LEAF03 (DNS) -> Spines
+  - src: leaf03
+    dst: spine01
+    bw: 1000
+    delay: 1ms
+  - src: leaf03
+    dst: spine02
+    bw: 1000
+    delay: 1ms
+
+  # LEAF04 (DB) -> Spines
+  - src: leaf04
+    dst: spine01
+    bw: 1000
+    delay: 1ms
+  - src: leaf04
+    dst: spine02
+    bw: 1000
+    delay: 1ms
+
+  # Leaf -> Servers (ToR - Top of Rack)
+  - src: leaf02
+    dst: web01
+    bw: 1000
+    delay: 1ms
+  - src: leaf02
+    dst: web02
+    bw: 1000
+    delay: 1ms
+  - src: leaf03
+    dst: dns01
+    bw: 1000
+    delay: 1ms
+  - src: leaf03
+    dst: dns02
+    bw: 1000
+    delay: 1ms
+  - src: leaf04
+    dst: db01
+    bw: 1000
+    delay: 1ms
+  - src: leaf04
+    dst: db02
+    bw: 1000
+    delay: 1ms
+
+# ----------------------------------------------------------------
+# Test Matrix
+# ----------------------------------------------------------------
+tests:
+  description: "Kiểm tra kết nối Spine-Leaf fabric Branch 3"
+  intra_rack:
+    - rack: WEB
+      pairs: [[web01, web02]]
+    - rack: DNS
+      pairs: [[dns01, dns02]]
+    - rack: DB
+      pairs: [[db01, db02]]
+  inter_rack:
+    # Cross-rack via Spine (2 hops)
+    - [web01, dns01]
+    - [web01, db01]
+    - [dns01, db01]
+  gateway_reachability:
+    - host: web01
+      target: 10.3.0.1
+    - host: dns01
+      target: 10.3.0.1
+    - host: db01
+      target: 10.3.0.1
