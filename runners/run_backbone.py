@@ -55,16 +55,20 @@ import argparse
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, PROJECT_ROOT)
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'tools'))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, 'topologies'))
 
 from mininet.net import Mininet
 from mininet.link import TCLink
 from mininet.log import setLogLevel, info, warn
 from mininet.cli import CLI
 
-from node_types import MPLSRouter       # dùng chung từ tools/node_types.py
+from node_types import MPLSRouter
 from config_loader import BackboneConfigLoader
 from frr_manager import FRRManager
 from connectivity_test import ConnectivityTest, TestReport, TestResult
+
+# --- Topology builder ---
+from backbone import build_backbone_nodes, build_backbone_links
 
 
 # ----------------------------------------------------------------
@@ -72,113 +76,19 @@ from connectivity_test import ConnectivityTest, TestReport, TestResult
 # ----------------------------------------------------------------
 def build_backbone(backbone_loader):
     """
-    Xây dựng topology backbone thuần túy: P01-P04, PE01-PE03.
-    Không có CE, không có LAN hosts.
-
-    Interface naming convention (khớp với FRR config):
-      p01-eth0  (P01 -> P02)
-      p01-eth1  (P01 -> P03 diagonal)
-      p01-pe01  (P01 -> PE01)
-      pe01-p01  (PE01 -> P01)
-      pe01-p02  (PE01 -> P02)
+    Xây dựng topology backbone qua builder functions (tái sử dụng).
     """
     net = Mininet(controller=None, link=TCLink, waitConnected=False)
 
-    # ---- P-Routers (core label switching) ----
-    info('*** Tạo P-Routers (Core MPLS)\n')
-    for name in ['p01', 'p02', 'p03', 'p04']:
-        net.addHost(name, cls=MPLSRouter, ip=None)
+    # ---- Thêm Nodes (P + PE) ----
+    info('\n*** Tạo Backbone Nodes (P + PE)\n')
+    build_backbone_nodes(net, MPLSRouter)
 
-    # ---- PE-Routers (edge VPLS endpoints) ----
-    info('*** Tạo PE-Routers (Edge MPLS)\n')
-    for name in ['pe01', 'pe02', 'pe03']:
-        net.addHost(name, cls=MPLSRouter, ip=None)
-
-    # ---- Backbone P-P Links ----
-    info('*** Kết nối P-P links (Partial Mesh)\n')
-    p_p_links = backbone_loader.get_backbone_links()
-    if p_p_links:
-        for link_cfg in p_p_links:
-            net.addLink(
-                link_cfg['src'], link_cfg['dst'],
-                bw=link_cfg.get('bw', 1000),
-                delay=link_cfg.get('delay', '1ms'),
-                intfName1=link_cfg.get('src_intf', ''),
-                intfName2=link_cfg.get('dst_intf', ''),
-            )
-    else:
-        # Fallback: dùng interface names theo convention FRR config
-        info('  [INFO] Không có backbone_links trong YAML, dùng config mặc định\n')
-        _build_default_p_p_links(net)
-
-    # ---- PE-P Links (Dual-homed) ----
-    info('*** Kết nối PE-P links (Dual-homed)\n')
-    pe_p_links = backbone_loader.get_pe_p_links()
-    if pe_p_links:
-        for link_cfg in pe_p_links:
-            net.addLink(
-                link_cfg['src'], link_cfg['dst'],
-                bw=link_cfg.get('bw', 1000),
-                delay=link_cfg.get('delay', '1ms'),
-                intfName1=link_cfg.get('src_intf', ''),
-                intfName2=link_cfg.get('dst_intf', ''),
-            )
-    else:
-        _build_default_pe_p_links(net)
+    # ---- Thêm Links (P-P + PE-P) ----
+    info('*** Kết nối Backbone Links (Core Mesh + Dual-homed)\n')
+    build_backbone_links(net, backbone_loader)
 
     return net
-
-
-def _build_default_p_p_links(net):
-    """Tạo P-P links với interface names chuẩn (khớp FRR config)."""
-    # P01 -- P02
-    net.addLink('p01', 'p02',
-                bw=1000, delay='1ms',
-                intfName1='p01-eth0', intfName2='p02-eth0')
-    # P02 -- P03
-    net.addLink('p02', 'p03',
-                bw=1000, delay='1ms',
-                intfName1='p02-eth1', intfName2='p03-eth0')
-    # P03 -- P04
-    net.addLink('p03', 'p04',
-                bw=1000, delay='1ms',
-                intfName1='p03-eth1', intfName2='p04-eth0')
-    # P01 -- P03 (diagonal)
-    net.addLink('p01', 'p03',
-                bw=1000, delay='2ms',
-                intfName1='p01-eth1', intfName2='p03-eth2')
-    # P02 -- P04 (diagonal)
-    net.addLink('p02', 'p04',
-                bw=1000, delay='2ms',
-                intfName1='p02-eth2', intfName2='p04-eth1')
-
-
-def _build_default_pe_p_links(net):
-    """Tạo PE-P links với interface names chuẩn (khớp FRR config)."""
-    # PE01 -- P01 (primary)
-    net.addLink('pe01', 'p01',
-                bw=1000, delay='1ms',
-                intfName1='pe01-p01', intfName2='p01-pe01')
-    # PE01 -- P02 (alternate/dual-homed)
-    net.addLink('pe01', 'p02',
-                bw=1000, delay='1ms',
-                intfName1='pe01-p02', intfName2='p02-pe01')
-    # PE02 -- P02 (primary)
-    net.addLink('pe02', 'p02',
-                bw=1000, delay='1ms',
-                intfName1='pe02-p02', intfName2='p02-pe02')
-    # PE02 -- P03 (alternate)
-    net.addLink('pe02', 'p03',
-                bw=1000, delay='1ms',
-                intfName1='pe02-p03', intfName2='p03-pe02')
-    # PE03 -- P03 (primary)
-    net.addLink('pe03', 'p03',
-                bw=1000, delay='1ms',
-                intfName1='pe03-p03', intfName2='p03-pe03')
-    # PE03 -- P04 (alternate)
-    net.addLink('pe03', 'p04',
-                bw=1000, delay='1ms',
-                intfName1='pe03-p04', intfName2='p04-pe03')
 
 
 # ----------------------------------------------------------------

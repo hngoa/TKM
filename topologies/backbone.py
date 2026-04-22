@@ -111,12 +111,16 @@ def build_backbone_links(net, backbone_loader=None):
 
     if p_p_links:
         for link_cfg in p_p_links:
+            # Hỗ trợ cả src_intf/dst_intf và intf1/intf2 từ YAML
+            intf1 = link_cfg.get('src_intf') or link_cfg.get('intf1', '')
+            intf2 = link_cfg.get('dst_intf') or link_cfg.get('intf2', '')
+            
             net.addLink(
                 link_cfg['src'], link_cfg['dst'],
                 bw=link_cfg.get('bw', 1000),
                 delay=link_cfg.get('delay', '2ms'),
-                intfName1=link_cfg.get('src_intf', ''),
-                intfName2=link_cfg.get('dst_intf', ''),
+                intfName1=intf1,
+                intfName2=intf2,
             )
     else:
         _add_default_p_p_links(net)
@@ -129,12 +133,16 @@ def build_backbone_links(net, backbone_loader=None):
 
     if pe_p_links:
         for link_cfg in pe_p_links:
+            # Hỗ trợ cả src_intf/dst_intf và intf1/intf2 từ YAML
+            intf1 = link_cfg.get('src_intf') or link_cfg.get('intf1', '')
+            intf2 = link_cfg.get('dst_intf') or link_cfg.get('intf2', '')
+
             net.addLink(
                 link_cfg['src'], link_cfg['dst'],
                 bw=link_cfg.get('bw', 1000),
                 delay=link_cfg.get('delay', '1ms'),
-                intfName1=link_cfg.get('src_intf', ''),
-                intfName2=link_cfg.get('dst_intf', ''),
+                intfName1=intf1,
+                intfName2=intf2,
             )
     else:
         _add_default_pe_p_links(net)
