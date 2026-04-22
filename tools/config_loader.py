@@ -105,7 +105,7 @@ class ConfigLoader:
             return
 
         ce_name = ce_cfg['name']
-        node = net.get(ce_name)
+        node = net.nameToNode.get(ce_name)
         if node is None:
             warn(f"[ConfigLoader] Node '{ce_name}' không tồn tại trong topology\n")
             return
@@ -180,7 +180,7 @@ class ConfigLoader:
             ip      = host_cfg['ip']
             gateway = host_cfg.get('gateway', '')
 
-            node = net.get(name)
+            node = net.nameToNode.get(name)
             if node is None:
                 warn(f"  [WARN] Host '{name}' không tồn tại trong topology\n")
                 continue
@@ -285,6 +285,14 @@ class BackboneConfigLoader:
         self._apply_ce_wan_interfaces(net)
         info('*** [BackboneLoader] Backbone IP config hoàn tất\n')
 
+    @staticmethod
+    def _get_node(net, name):
+        """
+        An toàn hơn net.get() — trả về None thay vì raise KeyError
+        khi node không tồn tại trong topology (ví dụ: backbone-only mode).
+        """
+        return net.nameToNode.get(name)
+
     def _apply_loopbacks(self, net):
         """Apply loopback IPs cho tất cả routers."""
         info('  [*] Cấu hình loopback addresses\n')
@@ -297,9 +305,9 @@ class BackboneConfigLoader:
             lo   = router.get('loopback', '')
             if not lo:
                 continue
-            node = net.get(name)
+            node = self._get_node(net, name)
             if node is None:
-                warn(f"  [WARN] Router {name} not found in topology\n")
+                warn(f"  [WARN] Router {name} not found in topology (skipping)\n")
                 continue
             node.cmd(f'ip addr add {lo} dev lo 2>/dev/null || true')
             node.cmd('ip link set lo up')
@@ -358,8 +366,9 @@ class BackboneConfigLoader:
             ce_ip    = wan['ce_ip']
             # Tên interface CE-PE theo convention: ce01-pe01
             intf_name = f"{ce_name}-{wan['pe']}"
-            node = net.get(ce_name)
+            node = self._get_node(net, ce_name)
             if node is None:
+                info(f'     [SKIP] {ce_name} không có trong topology (backbone-only mode)\n')
                 continue
             node.cmd(f'ip addr add {ce_ip} dev {intf_name} 2>/dev/null || true')
             node.cmd(f'ip link set {intf_name} up')
