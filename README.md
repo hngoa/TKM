@@ -140,6 +140,35 @@ Cài đặt: Mininet, FRRouting (FRR), iperf3, Python matplotlib, MPLS kernel mo
 
 ---
 
+### Phase 0 — Kiểm Tra ISP Backbone (Bắt Buộc Trước)
+
+Kiểm tra hạ tầng MPLS core hoạt động trước khi triển khai config xuống chi nhánh.
+
+```bash
+# FRR đầy đủ (OSPF + LDP + BGP)
+sudo python3 runners/run_backbone.py
+
+# Static routes (debug IP layer, không cần FRR)
+sudo python3 runners/run_backbone.py --no-frr
+
+# Auto test only
+sudo python3 runners/run_backbone.py --test
+```
+
+**Các test thực hiện:**
+
+| Test | Mô tả | Kỳ vọng |
+|------|-------|---------|
+| Test 1: P-P Links | Ping trực tiếp P01↔P02, P02↔P03... | ✅ 100% |
+| Test 2: PE-P Links | Ping PE01↔P01/P02, PE02↔P02/P03... | ✅ 100% |
+| Test 3: Loopback (end-to-end) | PE01 ping 10.0.0.12 (PE02), 10.0.0.13 (PE03) | ✅ OSPF OK |
+| Test 4: FRR Verify | OSPF Full, LDP sessions, BGP Established | ✅ Protocols up |
+
+> **Backbone OK** → Tiếp tục Phase 1  
+> **Backbone FAIL** → Dừng lại, debug trước
+
+---
+
 ### Phase 1 — Test Nội Bộ Từng Chi Nhánh (Isolated)
 
 Chạy riêng từng branch để xác nhận cấu hình nội bộ hoạt động trước khi kết nối MPLS.
