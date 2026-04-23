@@ -77,6 +77,7 @@ class FRRManager:
         """
         self.net = net
         self.configs_root = configs_root or PROJECT_ROOT
+        self._node_sock = {}  # node_name -> socket path (dùng cho vtysh)
         self._check_frr_installed()
 
     def _check_frr_installed(self):
@@ -104,13 +105,14 @@ class FRRManager:
     def deploy_to_node(self, node_name, conf_path):
         """
         Deploy FRR config vào một Mininet node.
-        
-        Quy trình:
-        1. Tạo thư mục /etc/frr trong namespace của node
-        2. Copy config file vào /etc/frr/frr.conf
-        3. Tạo daemons file phù hợp 
-        4. Khởi động FRR daemons
-        
+
+        Mininet nodes CHIA SẾ filesystem nhưng có network namespace riêng.
+        => Mỗi node phải dùng:
+          - Config file riêng: /tmp/frr_<node>.conf
+          - Runtime dir riêng: /var/run/frr/<node>/
+          - Socket riêng:     /var/run/frr/<node>/zserv.api
+        Không dùng /etc/frr/frr.conf (shared — bị node sau ghi đè).
+
         Args:
             node_name: tên node trong Mininet (ví dụ: 'p01')
             conf_path: đường dẫn đến file .conf (tương đối từ configs_root)
@@ -131,30 +133,28 @@ class FRRManager:
 
         info(f"  [FRR] Deploying to {node_name}...\n")
 
-        # Đọc config content
+        # Per-node paths — tránh conflict với các nodes khác
+        conf_file = f'/tmp/frr_{node_name}.conf'
+        run_dir   = f'/var/run/frr/{node_name}'
+        sock      = f'{run_dir}/zserv.api'
+        log_file  = f'/var/log/frr_{node_name}.log'
+
+        # Đọc config content từ host filesystem và ghi vào per-node path
         with open(full_conf_path, 'r') as f:
             conf_content = f.read()
-
-        # Tạo thư mục FRR
-        node.cmd('mkdir -p /etc/frr /var/run/frr /var/log/frr')
-        node.cmd('chmod 755 /etc/frr /var/run/frr /var/log/frr')
-
-        # Xác định daemons cần chạy dựa theo loại router
-        daemons_content = self._get_daemons_config(node_name)
-        node.cmd(f"printf '{daemons_content}' > /etc/frr/daemons")
-
-        # Write config file (dùng python để tránh shell escape issues)
-        tmp_conf = f'/tmp/frr_{node_name}.conf'
-        with open(tmp_conf, 'w') as f:
+        with open(conf_file, 'w') as f:
             f.write(conf_content)
-        node.cmd(f'cp {tmp_conf} /etc/frr/frr.conf')
+        node.cmd(f'chmod 644 {conf_file}')
 
-        # Set permissions
-        node.cmd('chown -R frr:frr /etc/frr/ 2>/dev/null || true')
-        node.cmd('chmod 640 /etc/frr/frr.conf')
+        # Tạo runtime directory riêng cho node này
+        node.cmd(f'mkdir -p {run_dir} /var/log/frr')
+        node.cmd(f'chmod 755 {run_dir}')
+
+        # Lưu socket path để verify_* sử dụng sau
+        self._node_sock[node_name] = sock
 
         # Khởi động daemons
-        return self._start_frr_daemons(node, node_name)
+        return self._start_frr_daemons(node, node_name, conf_file, run_dir, sock, log_file)
 
     def _get_daemons_config(self, node_name):
         """Trả về nội dung file /etc/frr/daemons phù hợp với loại router."""
@@ -185,17 +185,15 @@ class FRRManager:
             return base.replace("ldpd=yes", "ldpd=no")
         return base  # P routers: OSPF + LDP
 
-    def _start_frr_daemons(self, node, node_name):
-        """Khởi động FRR daemons trong network namespace của node.
-
-        Mỗi node dùng thư mục riêng (/var/run/frr/<node_name>/) để tránh
-        pid/socket conflict khi nhiều nodes chia sẻ cùng filesystem.
+    def _start_frr_daemons(self, node, node_name, conf_file, run_dir, sock, log_file):
         """
-        # Thư mục runtime riêng cho từng node (tránh conflict pid/socket)
-        run_dir = f'/var/run/frr/{node_name}'
-        node.cmd(f'mkdir -p {run_dir}')
-        node.cmd(f'chmod 755 {run_dir}')
+        Khởi động FRR daemons trong network namespace của node.
 
+        Daemons được start với:
+          -f <conf_file>  : per-node config (không dùng /etc/frr/frr.conf shared)
+          -z <sock>       : per-node Unix socket (không dùng /var/run/frr/zserv.api shared)
+          -i <run_dir>/.. : per-node pid files
+        """
         # Thử dùng frrinit.sh (phương pháp chuẩn)
         result = node.cmd('/usr/lib/frr/frrinit.sh start 2>&1')
         if 'failed' not in result.lower() and 'error' not in result.lower() \
@@ -203,40 +201,47 @@ class FRRManager:
             info(f"     [OK] FRR started on {node_name} (frrinit.sh)\n")
             return True
 
-        # Fallback: khởi động từng daemon thủ công với paths riêng theo node
+        # Fallback: khởi động từng daemon thủ công với per-node paths
         info(f"     [INFO] Fallback: khởi động daemons thủ công cho {node_name}\n")
 
-        sock = f'{run_dir}/zserv.api'
-
+        # Zebra trước, các daemon khác phụ thuộc vào zebra socket
         node.cmd(
-            f'/usr/lib/frr/zebra -d -f /etc/frr/frr.conf '
-            f'-i {run_dir}/zebra.pid -z {sock} 2>/dev/null'
+            f'/usr/lib/frr/zebra -d '
+            f'-f {conf_file} '
+            f'-i {run_dir}/zebra.pid '
+            f'-z {sock} '
+            f'--log file:{log_file} '
+            f'2>/dev/null'
         )
-        time.sleep(0.8)  # Đợi zebra sẵn sàng trước khi các daemon khác kết nối
+        time.sleep(1.0)  # Đợi zebra bind socket trước
 
         node.cmd(
-            f'/usr/lib/frr/ospfd -d -f /etc/frr/frr.conf '
-            f'-i {run_dir}/ospfd.pid -z {sock} 2>/dev/null'
+            f'/usr/lib/frr/ospfd -d '
+            f'-f {conf_file} '
+            f'-i {run_dir}/ospfd.pid '
+            f'-z {sock} '
+            f'2>/dev/null'
         )
 
         if node_name in P_ROUTERS or node_name in PE_ROUTERS:
             node.cmd(
-                f'/usr/lib/frr/ldpd -d -f /etc/frr/frr.conf '
-                f'-i {run_dir}/ldpd.pid -z {sock} 2>/dev/null'
+                f'/usr/lib/frr/ldpd -d '
+                f'-f {conf_file} '
+                f'-i {run_dir}/ldpd.pid '
+                f'-z {sock} '
+                f'2>/dev/null'
             )
 
         if node_name in PE_ROUTERS:
             node.cmd(
-                f'/usr/lib/frr/bgpd -d -f /etc/frr/frr.conf '
-                f'-i {run_dir}/bgpd.pid -z {sock} 2>/dev/null'
+                f'/usr/lib/frr/bgpd -d '
+                f'-f {conf_file} '
+                f'-i {run_dir}/bgpd.pid '
+                f'-z {sock} '
+                f'2>/dev/null'
             )
 
-        # Cập nhật vtysh để dùng socket đúng
-        node.cmd(
-            f'echo "service integrated-vtysh-config" >> /etc/frr/frr.conf 2>/dev/null || true'
-        )
-
-        info(f"     [OK] FRR daemons started on {node_name} (run_dir={run_dir})\n")
+        info(f"     [OK] FRR daemons started on {node_name} (sock={sock})\n")
         return True
 
     # ------------------------------------------------------------------
@@ -364,22 +369,29 @@ class FRRManager:
             time.sleep(5)
         info('*** [FRRManager] Done waiting\n')
 
+    def _vtysh(self, node, node_name, cmd):
+        """Chạy vtysh command trên node, dùng per-node socket nếu có."""
+        sock = self._node_sock.get(node_name)
+        if sock:
+            return node.cmd(f'vtysh -s {sock} -c "{cmd}" 2>/dev/null || echo "vtysh error"')
+        return node.cmd(f'vtysh -c "{cmd}" 2>/dev/null || echo "vtysh error"')
+
     def verify_ospf(self, router_names=None):
         """Kiểm tra OSPF neighbors trên các routers."""
         routers = router_names or (P_ROUTERS + PE_ROUTERS)
-        info('\n*** [FRRManager] === Kiểm tra OSPF Neighbors ===\n')
+        info('\n  [4a] OSPF Neighbors:\n')
         all_ok = True
         for name in routers:
             node = self.net.get(name)
             if node is None:
                 continue
-            result = node.cmd('vtysh -c "show ip ospf neighbor" 2>/dev/null || '
-                              'echo "OSPF not running"')
-            info(f'  [{name}] OSPF neighbors:\n')
+            result = self._vtysh(node, name, 'show ip ospf neighbor')
+            full_count = result.count('Full')
+            info(f'  [{name}] Full neighbors: {full_count}\n')
             for line in result.strip().split('\n'):
                 if line.strip():
                     info(f'    {line}\n')
-            if 'Full' not in result and 'OSPF' not in result:
+            if full_count == 0:
                 warn(f'  [WARN] {name}: Không có OSPF neighbor ở trạng thái Full\n')
                 all_ok = False
         return all_ok
@@ -387,37 +399,40 @@ class FRRManager:
     def verify_ldp(self, router_names=None):
         """Kiểm tra LDP sessions."""
         routers = router_names or (P_ROUTERS + PE_ROUTERS)
-        info('\n*** [FRRManager] === Kiểm tra LDP Sessions ===\n')
+        info('\n  [4b] LDP Sessions:\n')
         all_ok = True
         for name in routers:
             node = self.net.get(name)
             if node is None:
                 continue
-            result = node.cmd('vtysh -c "show mpls ldp neighbor" 2>/dev/null || '
-                              'echo "LDP not running"')
-            info(f'  [{name}] LDP sessions:\n')
+            result = self._vtysh(node, name, 'show mpls ldp neighbor')
+            session_count = result.count('OPERATIONAL')
+            info(f'  [{name}] LDP sessions: {session_count}\n')
             for line in result.strip().split('\n'):
-                if line.strip():
+                if line.strip() and 'vtysh' not in line:
                     info(f'    {line}\n')
+            if session_count == 0:
+                all_ok = False
         return all_ok
 
     def verify_bgp(self, pe_names=None):
         """Kiểm tra BGP sessions giữa PE routers."""
         pes = pe_names or PE_ROUTERS
-        info('\n*** [FRRManager] === Kiểm tra BGP Sessions ===\n')
+        info('\n  [4c] BGP Sessions (PE-PE iBGP for VPLS):\n')
         all_ok = True
         for name in pes:
             node = self.net.get(name)
             if node is None:
                 continue
-            result = node.cmd('vtysh -c "show bgp l2vpn evpn summary" 2>/dev/null || '
-                              'vtysh -c "show bgp summary" 2>/dev/null || '
-                              'echo "BGP not running"')
-            info(f'  [{name}] BGP summary:\n')
+            result = self._vtysh(node, name, 'show bgp l2vpn evpn summary')
+            if 'not running' in result.lower() or 'vtysh error' in result.lower():
+                result = self._vtysh(node, name, 'show bgp summary')
+            established = result.count('Established')
+            info(f'  [{name}] BGP Established sessions: {established}\n')
             for line in result.strip().split('\n'):
-                if line.strip():
+                if line.strip() and 'vtysh' not in line:
                     info(f'    {line}\n')
-            if 'Established' not in result and 'BGP' not in result:
+            if established == 0:
                 warn(f'  [WARN] {name}: BGP chưa Established\n')
                 all_ok = False
         return all_ok
