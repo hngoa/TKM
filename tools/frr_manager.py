@@ -189,28 +189,18 @@ class FRRManager:
         """
         Khởi động FRR daemons trong network namespace của node.
 
-        Daemons được start với:
-          -f <conf_file>  : per-node config (không dùng /etc/frr/frr.conf shared)
-          -z <sock>       : per-node Unix socket (không dùng /var/run/frr/zserv.api shared)
-          -i <run_dir>/.. : per-node pid files
+        Không dùng frrinit.sh vì trong Mininet, host FRR đang chạy khiến
+        frrinit.sh luôn trả về 'success' mà không start per-node daemon.
+        Luôn start từng daemon trực tiếp với per-node paths.
         """
-        # Thử dùng frrinit.sh (phương pháp chuẩn)
-        result = node.cmd('/usr/lib/frr/frrinit.sh start 2>&1')
-        if 'failed' not in result.lower() and 'error' not in result.lower() \
-                and 'no such' not in result.lower():
-            info(f"     [OK] FRR started on {node_name} (frrinit.sh)\n")
-            return True
+        info(f"     [INFO] Starting FRR daemons for {node_name}...\n")
 
-        # Fallback: khởi động từng daemon thủ công với per-node paths
-        info(f"     [INFO] Fallback: khởi động daemons thủ công cho {node_name}\n")
-
-        # Zebra trước, các daemon khác phụ thuộc vào zebra socket
+        # Zebra trước — các daemon khác kết nối vào socket của zebra
         node.cmd(
             f'/usr/lib/frr/zebra -d '
             f'-f {conf_file} '
             f'-i {run_dir}/zebra.pid '
             f'-z {sock} '
-            f'--log file:{log_file} '
             f'2>/dev/null'
         )
         time.sleep(1.0)  # Đợi zebra bind socket trước
@@ -241,7 +231,12 @@ class FRRManager:
                 f'2>/dev/null'
             )
 
-        info(f"     [OK] FRR daemons started on {node_name} (sock={sock})\n")
+        # Xác nhận zebra socket đã tạo
+        check = node.cmd(f'ls {sock} 2>/dev/null')
+        if sock in check or check.strip() == sock.strip():
+            info(f"     [OK] FRR daemons started on {node_name} (sock={sock})\n")
+        else:
+            warn(f"     [WARN] {node_name}: zebra socket chưa xuất hiện tại {sock}\n")
         return True
 
     # ------------------------------------------------------------------
@@ -373,8 +368,14 @@ class FRRManager:
         """Chạy vtysh command trên node, dùng per-node socket nếu có."""
         sock = self._node_sock.get(node_name)
         if sock:
-            return node.cmd(f'vtysh -s {sock} -c "{cmd}" 2>/dev/null || echo "vtysh error"')
-        return node.cmd(f'vtysh -c "{cmd}" 2>/dev/null || echo "vtysh error"')
+            # Thử --vty_socket (long form), rồi fallback về default socket
+            result = node.cmd(
+                f'vtysh --vty_socket {sock} -c "{cmd}" 2>/dev/null'
+            )
+            if 'unrecognized option' not in result and 'invalid option' not in result:
+                return result
+            # FRR version không hỗ trợ --vty_socket: fallback dùng ip route
+        return node.cmd(f'vtysh -c "{cmd}" 2>/dev/null || echo "vtysh_fallback"')
 
     def verify_ospf(self, router_names=None):
         """Kiểm tra OSPF neighbors trên các routers."""
