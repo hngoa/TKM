@@ -21,6 +21,7 @@ Chạy:
 
 import sys
 import os
+import time
 import argparse
 import yaml
 
@@ -72,17 +73,34 @@ def run(interactive=True, use_frr=True, save_report=True):
 
     try:
         net.start()
+        info('\n*** Đang đợi interfaces sẵn sàng (5s)...\n')
+        time.sleep(5)
 
         # ---- Phase 1: Apply IP Configuration từ YAML ----
         info('\n*** Phase 1: Áp dụng IP Configuration (từ YAML)\n')
-        # Backbone: loopbacks, P/PE interfaces, CE WAN interfaces
+        # Backbone: loopbacks, P/PE interfaces, CE WAN interfaces + static routes
         backbone_loader.apply_all(net)
         # Branch LAN: CE LAN interfaces + hosts
         for branch_id, loader in branch_loaders.items():
             info(f'  Applying {branch_id} LAN config...\n')
             loader.apply_all(net, mode='full')
 
-        # ---- Phase 2: FRR hoặc Static Routes ----
+        # Đợi ARP/routing table ổn định sau khi apply IP
+        info('\n*** Đang đợi ARP/routing ổn định (3s)...\n')
+        time.sleep(3)
+
+        # ---- Quick sanity check: xác nhận IP đã assign đúng ----
+        info('\n*** [Sanity] Kiểm tra IP trên backbone key nodes:\n')
+        for node_name, intf_name in [
+            ('pe01', 'pe01-p01'), ('pe01', 'pe01-p02'),
+            ('pe02', 'pe02-p02'), ('pe03', 'pe03-p03'),
+            ('p01',  'p01-pe01'), ('p02',  'p02-pe01'),
+        ]:
+            node = net.get(node_name)
+            if node:
+                ip_out = node.cmd(f'ip addr show {intf_name} 2>/dev/null | grep -oP "(?<=inet )[\\d.]+/\\d+"').strip()
+                info(f'  {node_name} {intf_name}: {ip_out or "NO IP!"}\n')
+
         if use_frr:
             info('\n*** Phase 2: Triển khai FRR (OSPF + LDP + BGP)\n')
             frr_mgr = FRRManager(net)
@@ -99,11 +117,12 @@ def run(interactive=True, use_frr=True, save_report=True):
                 info('\n*** Phase 4: Verification\n')
                 frr_mgr.verify_all()
             else:
-                warn('[!] FRR unavailable — không thể dùng dynamic routing\n')
-                warn('[!] Chạy lại với --no-frr để dùng static routes\n')
+                warn('[!] FRR unavailable — chạy với static routes từ YAML\n')
+                info('[*] Static routes đã được apply trong Phase 1 (backbone_loader.apply_all)\n')
+                info('[*] Để dùng dynamic routing: sudo apt install -y frr frr-pythontools\n')
         else:
-            info('\n*** Phase 2: --no-frr mode — Bỏ qua FRR\n')
-            info('    Static routes cần được cấu hình thủ công hoặc qua ce_router.static_routes trong YAML\n')
+            info('\n*** Phase 2: --no-frr mode — Dùng Static Routes từ YAML\n')
+            info('    Static routes đã được apply trong Phase 1 (backbone_loader.apply_all)\n')
 
         # ---- Phase 3: Connectivity Tests ----
         info('\n*** Phase 3: Connectivity Tests\n')

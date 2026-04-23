@@ -321,8 +321,9 @@ class BackboneConfigLoader:
         info('  [*] Cấu hình P-Router interfaces & routes\n')
         for router in self.config.get('p_routers', []):
             name = router['name']
-            node = net.get(name)
+            node = self._get_node(net, name)
             if node is None:
+                warn(f'  [WARN] P-Router {name} not found in topology (skipping)\n')
                 continue
             node.cmd('sysctl -w net.ipv4.ip_forward=1')
             node.cmd('sysctl -w net.mpls.platform_labels=1048575')
@@ -331,12 +332,14 @@ class BackboneConfigLoader:
             for intf in router.get('interfaces', []):
                 intf_name = intf['name']
                 intf_ip   = intf['ip']
+                # Flush IP cũ (Mininet tự assign ngẫu nhiên khi tạo link)
+                node.cmd(f'ip addr flush dev {intf_name} 2>/dev/null || true')
                 node.cmd(f'ip addr add {intf_ip} dev {intf_name} 2>/dev/null || true')
                 node.cmd(f'ip link set {intf_name} up')
-                # Bật MPLS input trên interface
-                node.cmd(f'sysctl -w net.mpls.conf.{intf_name}.input=1 2>/dev/null || true')
+                # Bật MPLS input: dùng /proc/sys để tránh vấn đề dấu '-' trong sysctl path
+                node.cmd(f'echo 1 > /proc/sys/net/mpls/conf/{intf_name}/input 2>/dev/null || true')
                 info(f"     {name} {intf_name}: {intf_ip}\n")
-            
+
             # Cấu hình static routes (nếu có)
             for route in router.get('static_routes', []):
                 prefix = route.get('prefix')
@@ -350,8 +353,9 @@ class BackboneConfigLoader:
         info('  [*] Cấu hình PE-Router interfaces & routes\n')
         for router in self.config.get('pe_routers', []):
             name = router['name']
-            node = net.get(name)
+            node = self._get_node(net, name)
             if node is None:
+                warn(f'  [WARN] PE-Router {name} not found in topology (skipping)\n')
                 continue
             node.cmd('sysctl -w net.ipv4.ip_forward=1')
             node.cmd('sysctl -w net.mpls.platform_labels=1048575')
@@ -360,11 +364,13 @@ class BackboneConfigLoader:
             for intf in router.get('interfaces', []):
                 intf_name = intf['name']
                 intf_ip   = intf['ip']
+                # Flush IP cũ (Mininet tự assign ngẫu nhiên khi tạo link)
+                node.cmd(f'ip addr flush dev {intf_name} 2>/dev/null || true')
                 node.cmd(f'ip addr add {intf_ip} dev {intf_name} 2>/dev/null || true')
                 node.cmd(f'ip link set {intf_name} up')
-                # Bật MPLS chỉ trên backbone interfaces (không trên AC port)
+                # Bật MPLS chỉ trên backbone interfaces (không trên AC/WAN port)
                 if not intf.get('wan_link', False):
-                    node.cmd(f'sysctl -w net.mpls.conf.{intf_name}.input=1 2>/dev/null || true')
+                    node.cmd(f'echo 1 > /proc/sys/net/mpls/conf/{intf_name}/input 2>/dev/null || true')
                 info(f"     {name} {intf_name}: {intf_ip}\n")
 
             # Cấu hình static routes (nếu có)
