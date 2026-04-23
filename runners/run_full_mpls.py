@@ -42,7 +42,6 @@ from full_topology import build_full_topology
 from config_loader import ConfigLoader, BackboneConfigLoader
 from frr_manager import FRRManager
 from connectivity_test import ConnectivityTest
-from inter_branch_routing import InterBranchRouting
 
 
 # ----------------------------------------------------------------
@@ -114,15 +113,6 @@ def run(interactive=True, use_frr=True, save_report=True):
                 ip_out = node.cmd(f'ip addr show {intf_name} 2>/dev/null | grep -oP "(?<=inet )[\\d.]+/\\d+"').strip()
                 info(f'  {node_name} {intf_name}: {ip_out or "NO IP!"}\n')
 
-        # ---- Phase 1b: Inter-Branch Static Routing ----
-        # Cấu hình routes trên CE + PE để CE-to-CE hoạt động
-        # không phụ thuộc OSPF/LDP (đảm bảo connectivity luôn có)
-        info('\n*** Phase 1b: Cấu hình Inter-Branch Routing\n')
-        ibr = InterBranchRouting(net)
-        ibr.apply_all()
-        time.sleep(2)
-        ibr.verify_ce_connectivity()
-
         if use_frr:
             info('\n*** Phase 2: Triển khai FRR (OSPF + LDP + BGP)\n')
             frr_mgr = FRRManager(net)
@@ -165,12 +155,12 @@ def run(interactive=True, use_frr=True, save_report=True):
         # CLI
         if interactive:
             info('\n*** Entering Mininet CLI\n')
-            info('*** Inter-branch test:  pc01 ping 10.2.10.11 (lab01)\n')
-            info('***                    lab01 ping 10.3.10.11 (web01)\n')
-            info('*** CE-CE WAN test:     ce01 ping 10.100.2.2\n')
-            info('*** Debug backbone:     p01 ping 10.0.0.2 | pe01 ping 10.0.0.12\n')
-            info('*** Debug route:        ce01 ip route show\n')
-            info('*** Debug MPLS:         p01 ip -M route\n')
+            info('*** Inter-branch test:  pc01 ping 10.2.10.11 (lab01 B2)\n')
+            info('***                    lab01 ping 10.3.10.11 (web01 B3)\n')
+            info('*** Debug OSPF:         pe01 vtysh -c "show ip ospf neighbor"\n')
+            info('*** Debug LDP:          p01  vtysh -c "show mpls ldp neighbor"\n')
+            info('*** Debug MPLS table:   p01  ip -M route\n')
+            info('*** Debug BGP:          pe01 vtysh -c "show bgp l2vpn evpn summary"\n')
             CLI(net)
 
     finally:
