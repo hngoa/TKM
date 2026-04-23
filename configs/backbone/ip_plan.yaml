@@ -161,11 +161,20 @@ pe_routers:
         peer: ce01
         wan_link: true
     static_routes:
-      # Backbone infrastructure
-      - {prefix: 10.0.0.12/32, via: 10.0.21.2} # PE02 via P02
-      - {prefix: 10.0.0.13/32, via: 10.0.21.2} # PE03 via P02
-      - {prefix: 10.0.10.0/24, via: 10.0.20.2} # Backbone subnets via P01
-      - {prefix: 10.0.11.0/24, via: 10.0.21.2} # Backbone subnets via P02
+      # Backbone infrastructure — loopbacks
+      - {prefix: 10.0.0.12/32, via: 10.0.21.2} # PE02 loopback via P02
+      - {prefix: 10.0.0.13/32, via: 10.0.21.2} # PE03 loopback via P02
+      # Backbone link subnets — cần để ICMP reply không bị drop
+      - {prefix: 10.0.10.0/30, via: 10.0.20.2} # P01-P02 link
+      - {prefix: 10.0.11.0/30, via: 10.0.21.2} # P02-P03 link
+      - {prefix: 10.0.12.0/30, via: 10.0.21.2} # P03-P04 link
+      - {prefix: 10.0.13.0/30, via: 10.0.20.2} # P01-P03 diagonal
+      - {prefix: 10.0.14.0/30, via: 10.0.21.2} # P02-P04 diagonal
+      - {prefix: 10.0.21.0/30, via: 10.0.21.2} # PE01-P02 (lo nguồn)
+      - {prefix: 10.0.22.0/30, via: 10.0.21.2} # PE02-P02
+      - {prefix: 10.0.23.0/30, via: 10.0.21.2} # PE02-P03
+      - {prefix: 10.0.24.0/30, via: 10.0.21.2} # PE03-P03
+      - {prefix: 10.0.25.0/30, via: 10.0.21.2} # PE03-P04
       # Inter-branch summaries
       - {prefix: 10.2.0.0/16, via: 10.0.21.2}  # Branch 2 via P02
       - {prefix: 10.3.0.0/16, via: 10.0.21.2}  # Branch 3 via P02
@@ -186,11 +195,19 @@ pe_routers:
         peer: ce02
         wan_link: true
     static_routes:
-      # Backbone infrastructure
-      - {prefix: 10.0.0.11/32, via: 10.0.22.2} # PE01 via P02
-      - {prefix: 10.0.0.13/32, via: 10.0.23.2} # PE03 via P03
-      - {prefix: 10.0.10.0/24, via: 10.0.22.2} # Backbone subnets
-      - {prefix: 10.0.11.0/24, via: 10.0.23.2}
+      # Backbone infrastructure — loopbacks
+      - {prefix: 10.0.0.11/32, via: 10.0.22.2} # PE01 loopback via P02
+      - {prefix: 10.0.0.13/32, via: 10.0.23.2} # PE03 loopback via P03
+      # Backbone link subnets — cần để ICMP reply không bị drop
+      - {prefix: 10.0.10.0/30, via: 10.0.22.2} # P01-P02 link
+      - {prefix: 10.0.11.0/30, via: 10.0.23.2} # P02-P03 link
+      - {prefix: 10.0.12.0/30, via: 10.0.23.2} # P03-P04 link
+      - {prefix: 10.0.13.0/30, via: 10.0.22.2} # P01-P03 diagonal
+      - {prefix: 10.0.14.0/30, via: 10.0.22.2} # P02-P04 diagonal
+      - {prefix: 10.0.20.0/30, via: 10.0.22.2} # PE01-P01
+      - {prefix: 10.0.21.0/30, via: 10.0.22.2} # PE01-P02
+      - {prefix: 10.0.24.0/30, via: 10.0.23.2} # PE03-P03
+      - {prefix: 10.0.25.0/30, via: 10.0.23.2} # PE03-P04
       # Inter-branch summaries
       - {prefix: 10.1.0.0/16, via: 10.0.22.2}  # Branch 1 via P02
       - {prefix: 10.3.0.0/16, via: 10.0.23.2}  # Branch 3 via P03
@@ -211,11 +228,19 @@ pe_routers:
         peer: ce03
         wan_link: true
     static_routes:
-      # Backbone infrastructure
-      - {prefix: 10.0.0.11/32, via: 10.0.24.2} # PE01 via P03
-      - {prefix: 10.0.0.12/32, via: 10.0.24.2} # PE02 via P03
-      - {prefix: 10.0.11.0/24, via: 10.0.24.2}
-      - {prefix: 10.0.12.0/24, via: 10.0.25.2}
+      # Backbone infrastructure — loopbacks
+      - {prefix: 10.0.0.11/32, via: 10.0.24.2} # PE01 loopback via P03
+      - {prefix: 10.0.0.12/32, via: 10.0.24.2} # PE02 loopback via P03
+      # Backbone link subnets — cần để ICMP reply không bị drop
+      - {prefix: 10.0.10.0/30, via: 10.0.24.2} # P01-P02 link
+      - {prefix: 10.0.11.0/30, via: 10.0.24.2} # P02-P03 link
+      - {prefix: 10.0.12.0/30, via: 10.0.25.2} # P03-P04 link
+      - {prefix: 10.0.13.0/30, via: 10.0.24.2} # P01-P03 diagonal
+      - {prefix: 10.0.14.0/30, via: 10.0.25.2} # P02-P04 diagonal
+      - {prefix: 10.0.20.0/30, via: 10.0.24.2} # PE01-P01
+      - {prefix: 10.0.21.0/30, via: 10.0.24.2} # PE01-P02
+      - {prefix: 10.0.22.0/30, via: 10.0.24.2} # PE02-P02
+      - {prefix: 10.0.23.0/30, via: 10.0.24.2} # PE02-P03
       # Inter-branch summaries
       - {prefix: 10.1.0.0/16, via: 10.0.24.2}  # Branch 1 via P03
       - {prefix: 10.2.0.0/16, via: 10.0.24.2}  # Branch 2 via P03

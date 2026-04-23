@@ -186,30 +186,57 @@ class FRRManager:
         return base  # P routers: OSPF + LDP
 
     def _start_frr_daemons(self, node, node_name):
-        """Khởi động FRR daemons trong network namespace của node."""
+        """Khởi động FRR daemons trong network namespace của node.
+
+        Mỗi node dùng thư mục riêng (/var/run/frr/<node_name>/) để tránh
+        pid/socket conflict khi nhiều nodes chia sẻ cùng filesystem.
+        """
+        # Thư mục runtime riêng cho từng node (tránh conflict pid/socket)
+        run_dir = f'/var/run/frr/{node_name}'
+        node.cmd(f'mkdir -p {run_dir}')
+        node.cmd(f'chmod 755 {run_dir}')
+
         # Thử dùng frrinit.sh (phương pháp chuẩn)
         result = node.cmd('/usr/lib/frr/frrinit.sh start 2>&1')
-        if 'failed' not in result.lower() and 'error' not in result.lower():
+        if 'failed' not in result.lower() and 'error' not in result.lower() \
+                and 'no such' not in result.lower():
             info(f"     [OK] FRR started on {node_name} (frrinit.sh)\n")
             return True
 
-        # Fallback: khởi động từng daemon thủ công
+        # Fallback: khởi động từng daemon thủ công với paths riêng theo node
         info(f"     [INFO] Fallback: khởi động daemons thủ công cho {node_name}\n")
-        node.cmd('/usr/lib/frr/zebra -d -f /etc/frr/frr.conf '
-                 '-i /var/run/frr/zebra.pid -z /var/run/frr/zserv.api 2>/dev/null')
-        time.sleep(0.5)
-        node.cmd('/usr/lib/frr/ospfd -d -f /etc/frr/frr.conf '
-                 '-i /var/run/frr/ospfd.pid -z /var/run/frr/zserv.api 2>/dev/null')
+
+        sock = f'{run_dir}/zserv.api'
+
+        node.cmd(
+            f'/usr/lib/frr/zebra -d -f /etc/frr/frr.conf '
+            f'-i {run_dir}/zebra.pid -z {sock} 2>/dev/null'
+        )
+        time.sleep(0.8)  # Đợi zebra sẵn sàng trước khi các daemon khác kết nối
+
+        node.cmd(
+            f'/usr/lib/frr/ospfd -d -f /etc/frr/frr.conf '
+            f'-i {run_dir}/ospfd.pid -z {sock} 2>/dev/null'
+        )
 
         if node_name in P_ROUTERS or node_name in PE_ROUTERS:
-            node.cmd('/usr/lib/frr/ldpd -d -f /etc/frr/frr.conf '
-                     '-i /var/run/frr/ldpd.pid -z /var/run/frr/zserv.api 2>/dev/null')
+            node.cmd(
+                f'/usr/lib/frr/ldpd -d -f /etc/frr/frr.conf '
+                f'-i {run_dir}/ldpd.pid -z {sock} 2>/dev/null'
+            )
 
         if node_name in PE_ROUTERS:
-            node.cmd('/usr/lib/frr/bgpd -d -f /etc/frr/frr.conf '
-                     '-i /var/run/frr/bgpd.pid -z /var/run/frr/zserv.api 2>/dev/null')
+            node.cmd(
+                f'/usr/lib/frr/bgpd -d -f /etc/frr/frr.conf '
+                f'-i {run_dir}/bgpd.pid -z {sock} 2>/dev/null'
+            )
 
-        info(f"     [OK] FRR daemons started on {node_name}\n")
+        # Cập nhật vtysh để dùng socket đúng
+        node.cmd(
+            f'echo "service integrated-vtysh-config" >> /etc/frr/frr.conf 2>/dev/null || true'
+        )
+
+        info(f"     [OK] FRR daemons started on {node_name} (run_dir={run_dir})\n")
         return True
 
     # ------------------------------------------------------------------
