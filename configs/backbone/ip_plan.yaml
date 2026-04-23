@@ -161,13 +161,14 @@ pe_routers:
         peer: ce01
         wan_link: true
     static_routes:
-      - {prefix: 10.0.0.0/16, via: 10.0.20.2}
-      - {prefix: 10.0.0.12/32, via: 10.0.21.2}
-      - {prefix: 10.0.0.13/32, via: 10.0.21.2}
-      - {prefix: 10.0.22.0/30, via: 10.0.21.2}
-      - {prefix: 10.0.23.0/30, via: 10.0.21.2}
-      - {prefix: 10.0.24.0/30, via: 10.0.21.2}
-      - {prefix: 10.0.25.0/30, via: 10.0.21.2}
+      # Backbone infrastructure
+      - {prefix: 10.0.0.12/32, via: 10.0.21.2} # PE02 via P02
+      - {prefix: 10.0.0.13/32, via: 10.0.21.2} # PE03 via P02
+      - {prefix: 10.0.10.0/24, via: 10.0.20.2} # Backbone subnets via P01
+      - {prefix: 10.0.11.0/24, via: 10.0.21.2} # Backbone subnets via P02
+      # Inter-branch summaries
+      - {prefix: 10.2.0.0/16, via: 10.0.21.2}  # Branch 2 via P02
+      - {prefix: 10.3.0.0/16, via: 10.0.21.2}  # Branch 3 via P02
 
   - name: pe02
     loopback: 10.0.0.12/32
@@ -185,13 +186,14 @@ pe_routers:
         peer: ce02
         wan_link: true
     static_routes:
-      - {prefix: 10.0.0.0/16, via: 10.0.22.2}
-      - {prefix: 10.0.0.11/32, via: 10.0.22.2}
-      - {prefix: 10.0.0.13/32, via: 10.0.23.2}
-      - {prefix: 10.0.20.0/30, via: 10.0.22.2}
-      - {prefix: 10.0.21.0/30, via: 10.0.22.2}
-      - {prefix: 10.0.24.0/30, via: 10.0.23.2}
-      - {prefix: 10.0.25.0/30, via: 10.0.23.2}
+      # Backbone infrastructure
+      - {prefix: 10.0.0.11/32, via: 10.0.22.2} # PE01 via P02
+      - {prefix: 10.0.0.13/32, via: 10.0.23.2} # PE03 via P03
+      - {prefix: 10.0.10.0/24, via: 10.0.22.2} # Backbone subnets
+      - {prefix: 10.0.11.0/24, via: 10.0.23.2}
+      # Inter-branch summaries
+      - {prefix: 10.1.0.0/16, via: 10.0.22.2}  # Branch 1 via P02
+      - {prefix: 10.3.0.0/16, via: 10.0.23.2}  # Branch 3 via P03
 
   - name: pe03
     loopback: 10.0.0.13/32
@@ -209,13 +211,14 @@ pe_routers:
         peer: ce03
         wan_link: true
     static_routes:
-      - {prefix: 10.0.0.0/16, via: 10.0.24.2}
-      - {prefix: 10.0.0.11/32, via: 10.0.24.2}
-      - {prefix: 10.0.0.12/32, via: 10.0.24.2}
-      - {prefix: 10.0.20.0/30, via: 10.0.24.2}
-      - {prefix: 10.0.21.0/30, via: 10.0.24.2}
-      - {prefix: 10.0.22.0/30, via: 10.0.24.2}
-      - {prefix: 10.0.23.0/30, via: 10.0.24.2}
+      # Backbone infrastructure
+      - {prefix: 10.0.0.11/32, via: 10.0.24.2} # PE01 via P03
+      - {prefix: 10.0.0.12/32, via: 10.0.24.2} # PE02 via P03
+      - {prefix: 10.0.11.0/24, via: 10.0.24.2}
+      - {prefix: 10.0.12.0/24, via: 10.0.25.2}
+      # Inter-branch summaries
+      - {prefix: 10.1.0.0/16, via: 10.0.24.2}  # Branch 1 via P03
+      - {prefix: 10.2.0.0/16, via: 10.0.24.2}  # Branch 2 via P03
 
 # ----------------------------------------------------------------
 # Links Summary (cho builder tái sử dụng)
