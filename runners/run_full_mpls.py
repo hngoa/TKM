@@ -23,6 +23,7 @@ import sys
 import os
 import time
 import argparse
+import subprocess
 import yaml
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -32,6 +33,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, 'topologies'))
 
 from mininet.log import setLogLevel, info, warn
 from mininet.cli import CLI
+from mininet.clean import cleanup as mn_cleanup
 
 # Topology builder — tái sử dụng từ topologies/, không tự viết lại
 from full_topology import build_full_topology
@@ -47,6 +49,16 @@ from connectivity_test import ConnectivityTest
 # ----------------------------------------------------------------
 def run(interactive=True, use_frr=True, save_report=True):
     setLogLevel('info')
+
+    # ---- Cleanup stale Mininet state từ lần chạy trước ----
+    # Tránh lỗi "RTNETLINK answers: File exists" khi tạo veth pairs
+    info('*** Cleaning up stale Mininet state...\n')
+    try:
+        mn_cleanup()
+    except Exception as e:
+        warn(f'[!] Cleanup warning (non-fatal): {e}\n')
+    info('*** Cleanup done\n')
+
 
     # ---- Load configs (YAML là nguồn duy nhất) ----
     backbone_cfg_path = os.path.join(PROJECT_ROOT, 'configs', 'backbone', 'ip_plan.yaml')
