@@ -36,6 +36,7 @@ Runner:        runners/run_branch2.py  (isolated)
 """
 
 from mininet.topo import Topo
+from mininet.log import info, warn
 
 
 # ====================================================================
@@ -113,13 +114,19 @@ def build_branch2_nodes(net, router_cls, loader):
 
     # CE02 — router, IP sẽ được apply bởi loader.apply_all() sau net.start()
     ce_cfg = loader.get_ce_config()
-    net.addHost(ce_cfg['name'], cls=router_cls, ip=None)
+    ce_name = ce_cfg['name']
+    if ce_name in net:
+        info(f"  [~] Sử dụng CE node đã tồn tại: {ce_name}\n")
+    else:
+        net.addHost(ce_name, cls=router_cls, ip=None)
 
-    # Switches — Branch2 có L2 loop (core-dist mesh) → RSTP sẽ bật sau start
+    # Switches — Branch2 có L2 loop (core-dist mesh)
+    # STP=False + standalone mode: OVS sẽ flood/learn đúng mà không cần đợi STP hội tụ
+    # (Trong Mininet lab, standalone + no STP đủ để test)
     for sw_cfg in loader.get_switches():
         sw_mode  = sw_cfg.get('mode', 'standalone')
         failMode = sw_mode if sw_mode in ('standalone', 'secure') else 'standalone'
-        net.addSwitch(sw_cfg['name'], failMode=failMode)
+        net.addSwitch(sw_cfg['name'], failMode=failMode, stp=False)
 
     # Hosts — tên và IP từ YAML
     for host_cfg in loader.get_hosts():

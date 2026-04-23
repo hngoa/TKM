@@ -393,6 +393,7 @@ class BackboneConfigLoader:
             if node is None:
                 info(f'     [SKIP] {ce_name} không có trong topology (backbone-only mode)\n')
                 continue
+            node.cmd(f'ip addr flush dev {intf_name} 2>/dev/null || true')
             node.cmd(f'ip addr add {ce_ip} dev {intf_name} 2>/dev/null || true')
             node.cmd(f'ip link set {intf_name} up')
             info(f"     {ce_name} {intf_name}: {ce_ip}\n")

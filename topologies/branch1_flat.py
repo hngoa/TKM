@@ -27,6 +27,7 @@ Runner:        runners/run_branch1.py  (isolated)
 """
 
 from mininet.topo import Topo
+from mininet.log import info, warn
 
 
 # ====================================================================
@@ -86,7 +87,11 @@ def build_branch1_nodes(net, router_cls, loader):
 
     # CE01 — router, IP sẽ được apply bởi loader.apply_all() sau net.start()
     ce_cfg = loader.get_ce_config()
-    net.addHost(ce_cfg['name'], cls=router_cls, ip=None)
+    ce_name = ce_cfg['name']
+    if ce_name in net:
+        info(f"  [~] Sử dụng CE node đã tồn tại: {ce_name}\n")
+    else:
+        net.addHost(ce_name, cls=router_cls, ip=None)
 
     # Switches — tên và mode từ YAML
     for sw_cfg in loader.get_switches():
