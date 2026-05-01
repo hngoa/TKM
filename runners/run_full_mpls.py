@@ -6,26 +6,22 @@ Runner: Full Topology — MPLS MAN với VPLS liên chi nhánh
 
 Giai đoạn 2: Test kết nối liên chi nhánh qua MPLS Backbone.
 
-Quy trình chạy:
-  1. Load configs từ YAML (backbone + 3 branch) — nguồn duy nhất cho mọi cấu hình
-  2. Build full topology qua build_full_topology() — tái sử dụng builders
-  3. net.start() → loader.apply_all() — IP hoàn toàn từ YAML
-  4. Deploy MPLS:
-     - Mặc định: Static MPLS labels + GRE VPLS (reliable)
-     - --frr:    FRR daemons OSPF + LDP + BGP (experimental)
-  5. Test connectivity: backbone + inter-branch
+Quy trình:
+  1. Build full topology (backbone + 3 branches)
+  2. Áp dụng IP config từ YAML (backbone + branches)
+  3. Triển khai Static MPLS + GRE VPLS + inter-branch routes
+  4. Test: backbone connectivity + inter-branch connectivity
+  5. MPLS/VPLS verification
 
 Chạy:
-    sudo python3 runners/run_full_mpls.py            # Static MPLS + CLI
+    sudo python3 runners/run_full_mpls.py            # Full run + CLI
     sudo python3 runners/run_full_mpls.py --test     # Auto test only
-    sudo python3 runners/run_full_mpls.py --frr      # FRR daemons (experimental)
 """
 
 import sys
 import os
 import time
 import argparse
-import subprocess
 import yaml
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -37,12 +33,11 @@ from mininet.log import setLogLevel, info, warn
 from mininet.cli import CLI
 from mininet.clean import cleanup as mn_cleanup
 
-# Topology builder — tái sử dụng từ topologies/, không tự viết lại
+# Topology builder
 from full_topology import build_full_topology
 
 # Tools
 from config_loader import ConfigLoader, BackboneConfigLoader
-from frr_manager import FRRManager
 from static_mpls import StaticMPLSManager
 from connectivity_test import ConnectivityTest
 
@@ -50,10 +45,10 @@ from connectivity_test import ConnectivityTest
 # ----------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------
-def run(interactive=True, use_frr=False, save_report=True):
+def run(interactive=True, save_report=True):
     setLogLevel('info')
 
-    # ---- Cleanup stale Mininet state từ lần chạy trước ----
+    # ---- Cleanup stale Mininet state ----
     info('*** Cleaning up stale Mininet state...\n')
     try:
         mn_cleanup()
@@ -77,7 +72,7 @@ def run(interactive=True, use_frr=False, save_report=True):
         'branch3': ConfigLoader(os.path.join(PROJECT_ROOT, 'configs', 'branch3', 'ip_plan.yaml')),
     }
 
-    # ---- Build topology — tái sử dụng builder functions từ topologies/ ----
+    # ---- Build topology ----
     info('\n*** Xây dựng Full Topology (MPLS Backbone + 3 Chi nhánh)\n')
     net = build_full_topology(
         backbone_loader=backbone_loader,
@@ -89,14 +84,10 @@ def run(interactive=True, use_frr=False, save_report=True):
         info('\n*** Đang đợi interfaces sẵn sàng (5s)...\n')
         time.sleep(5)
 
-        # ---- Phase 1: Apply IP Configuration từ YAML ----
+        # ---- Phase 1: Apply IP Configuration ----
         info('\n*** Phase 1: Áp dụng IP Configuration (từ YAML)\n')
-        # Backbone: loopbacks, P/PE interfaces, CE WAN
-        # Khi dùng static MPLS: cần static routes (skip_routes=False)
-        # Khi dùng FRR: OSPF quản lý routes (skip_routes=True)
-        backbone_loader.apply_all(net, skip_routes=use_frr)
+        backbone_loader.apply_all(net, skip_routes=False)
 
-        # Branch LAN: CE LAN interfaces + hosts
         for branch_id, loader in branch_loaders.items():
             info(f'  Applying {branch_id} LAN config...\n')
             loader.apply_all(net, mode='full')
@@ -116,33 +107,11 @@ def run(interactive=True, use_frr=False, save_report=True):
                 ip_out = node.cmd(f'ip addr show {intf_name} 2>/dev/null | grep -oP "(?<=inet )[\\d.]+/\\d+"').strip()
                 info(f'  {node_name} {intf_name}: {ip_out or "NO IP!"}\n')
 
-        # ---- Phase 2: Deploy MPLS ----
-        frr_mgr = None
-        mpls_mgr = None
-
-        if use_frr:
-            # FRR Daemons mode (experimental)
-            info('\n*** Phase 2: Triển khai FRR Daemons (experimental)\n')
-            frr_mgr = FRRManager(net)
-            if frr_mgr.frr_available:
-                frr_mgr.deploy_backbone()
-                frr_mgr.push_ce_configs()
-                info('\n*** Phase 2b: Setup VPLS (FRR bridge)\n')
-                frr_mgr.setup_vpls_bridge(vpls_config)
-                frr_mgr.wait_convergence(timeout=30)
-                info('\n*** Phase 2c: FRR Verification\n')
-                frr_mgr.verify_all()
-            else:
-                warn('[!] FRR không khả dụng — fallback về Static MPLS\n')
-                backbone_loader.apply_all(net, skip_routes=False)
-                mpls_mgr = StaticMPLSManager(net)
-                mpls_mgr.deploy_all()
-        else:
-            # Static MPLS mode (default — reliable)
-            info('\n*** Phase 2: Triển khai Static MPLS + GRE VPLS\n')
-            info('    (Static routes + MPLS labels + GRE pseudowires)\n')
-            mpls_mgr = StaticMPLSManager(net)
-            mpls_mgr.deploy_all()
+        # ---- Phase 2: Deploy Static MPLS + GRE VPLS ----
+        info('\n*** Phase 2: Triển khai Static MPLS + GRE VPLS\n')
+        info('    (MPLS labels + GRETAP pseudowires + inter-branch routes)\n')
+        mpls_mgr = StaticMPLSManager(net)
+        mpls_mgr.deploy_all()
 
         # ---- Phase 3: Connectivity Tests ----
         info('\n*** Phase 3: Connectivity Tests\n')
@@ -158,9 +127,8 @@ def run(interactive=True, use_frr=False, save_report=True):
         reports.append(inter_report)
 
         # ---- Phase 4: MPLS/VPLS Verification ----
-        if mpls_mgr:
-            mpls_mgr.verify_mpls()
-            mpls_mgr.verify_vpls()
+        mpls_mgr.verify_mpls()
+        mpls_mgr.verify_vpls()
 
         if save_report:
             tester.save_all_reports(reports, os.path.join(PROJECT_ROOT, 'result'))
@@ -170,7 +138,7 @@ def run(interactive=True, use_frr=False, save_report=True):
             info('\n*** Entering Mininet CLI\n')
             info('*** MPLS labels:    p01  ip -M route\n')
             info('*** VPLS bridge:    pe01 brctl show vpls-br\n')
-            info('*** GRE tunnels:    pe01 ip tunnel show\n')
+            info('*** GRE tunnels:    pe01 ip -d link show type gretap\n')
             info('*** Inter-branch:   pc01 ping 10.2.10.11 (lab01 B2)\n')
             info('***                 lab01 ping 10.3.10.11 (web01 B3)\n')
             info('*** PE loopback:    pe01 ping 10.0.0.12\n')
@@ -187,26 +155,18 @@ if __name__ == '__main__':
         description='Runner: Full MPLS MAN Topology (Backbone + 3 Branches)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Mặc định: Static MPLS + GRE VPLS (reliable, không cần FRR daemons)
-Thêm --frr để dùng FRR OSPF+LDP+BGP (experimental)
-
 Ví dụ:
   sudo python3 runners/run_full_mpls.py --test     # Auto test
-  sudo python3 runners/run_full_mpls.py --frr      # FRR daemons
+  sudo python3 runners/run_full_mpls.py            # Test + CLI
         """
     )
     parser.add_argument('--test', action='store_true',
                         help='Chỉ chạy auto test, không mở CLI')
-    parser.add_argument('--frr', action='store_true',
-                        help='Dùng FRR daemons (OSPF+LDP+BGP) thay vì Static MPLS')
-    parser.add_argument('--no-frr', action='store_true',
-                        help='[Legacy] Giống mặc định (Static MPLS)')
     parser.add_argument('--no-report', action='store_true',
                         help='Không lưu báo cáo')
     args = parser.parse_args()
 
     run(
         interactive=not args.test,
-        use_frr=args.frr,
         save_report=not args.no_report,
     )
