@@ -235,14 +235,13 @@ class StaticMPLSManager:
         """
         Thiết lập VPLS bằng GRE tunnels + Linux bridge.
 
-        Mô hình pseudowire emulation:
-          PE01 ←─GRE tunnel─→ PE02  (dùng loopback IPs)
-          PE01 ←─GRE tunnel─→ PE03
-          PE02 ←─GRE tunnel─→ PE03
+        Quan trọng: Tạo tunnel 2 CHIỀU cho mỗi cặp PE.
+        YAML chỉ define 1 chiều (pe01→pe02), code tự tạo chiều ngược (pe02→pe01).
 
-        Mỗi PE tạo Linux bridge kết nối:
-          - AC interface (pe01-ce01) = Attachment Circuit đến CE
-          - GRE tunnel interfaces = pseudowires đến PE khác
+        Mô hình:
+          PE01: bridge vpls-br = [pe01-ce01] + [gre-pe01-pe02] + [gre-pe01-pe03]
+          PE02: bridge vpls-br = [pe02-ce02] + [gre-pe02-pe01] + [gre-pe02-pe03]
+          PE03: bridge vpls-br = [pe03-ce03] + [gre-pe03-pe01] + [gre-pe03-pe02]
         """
         fallback = self.vpls_config.get('linux_vpls_fallback', {})
         if not fallback.get('enabled', False):
@@ -258,7 +257,10 @@ class StaticMPLSManager:
         for m in self.vpls_config.get('members', []):
             member_map[m['pe']] = m['ac_interface']
 
-        # Tạo GRE tunnels
+        # Theo dõi tunnel names đã tạo trên mỗi PE
+        pe_tunnels = {pe: [] for pe in member_map}  # pe_name -> [tun_name, ...]
+
+        # Tạo GRE tunnels (cả 2 chiều)
         for tcfg in tunnels:
             local_pe = tcfg['local_pe']
             remote_pe = tcfg['remote_pe']
@@ -267,16 +269,28 @@ class StaticMPLSManager:
             gre_key = tcfg.get('key', 100)
             tun_name = tcfg['name']
 
+            # Chiều thuận: local_pe → remote_pe
             node = self.net.get(local_pe)
-            if not node:
-                continue
+            if node:
+                node.cmd(f'ip tunnel add {tun_name} mode gre '
+                         f'local {local_ip} remote {remote_ip} '
+                         f'key {gre_key} 2>/dev/null || true')
+                node.cmd(f'ip link set {tun_name} up')
+                pe_tunnels.setdefault(local_pe, []).append(tun_name)
+                info(f'        [{local_pe}] GRE: {tun_name} '
+                     f'({local_ip} → {remote_ip}, key={gre_key})\n')
 
-            node.cmd(f'ip tunnel add {tun_name} mode gre '
-                     f'local {local_ip} remote {remote_ip} '
-                     f'key {gre_key} 2>/dev/null || true')
-            node.cmd(f'ip link set {tun_name} up')
-            info(f'        [{local_pe}] GRE tunnel: {tun_name} '
-                 f'({local_ip} → {remote_ip}, key={gre_key})\n')
+            # Chiều ngược: remote_pe → local_pe
+            rev_name = f'gre-{remote_pe}-{local_pe}'
+            node_rev = self.net.get(remote_pe)
+            if node_rev:
+                node_rev.cmd(f'ip tunnel add {rev_name} mode gre '
+                             f'local {remote_ip} remote {local_ip} '
+                             f'key {gre_key} 2>/dev/null || true')
+                node_rev.cmd(f'ip link set {rev_name} up')
+                pe_tunnels.setdefault(remote_pe, []).append(rev_name)
+                info(f'        [{remote_pe}] GRE: {rev_name} '
+                     f'({remote_ip} → {local_ip}, key={gre_key})\n')
 
         # Tạo bridge + add interfaces trên mỗi PE
         for pe_name, ac_intf in member_map.items():
@@ -285,23 +299,22 @@ class StaticMPLSManager:
                 continue
 
             # Tạo bridge
-            node.cmd(f'ip link add {bridge_name} type bridge 2>/dev/null || true')
+            node.cmd(f'ip link add {bridge_name} type bridge '
+                     f'2>/dev/null || true')
             node.cmd(f'ip link set {bridge_name} up')
 
             # Add AC interface
-            node.cmd(f'ip link set {ac_intf} master {bridge_name} 2>/dev/null || true')
-            info(f'        [{pe_name}] Bridge {bridge_name}: AC={ac_intf}')
+            node.cmd(f'ip link set {ac_intf} master {bridge_name} '
+                     f'2>/dev/null || true')
 
-            # Add GRE tunnels
-            tun_added = []
-            for tcfg in tunnels:
-                if tcfg['local_pe'] == pe_name:
-                    tun = tcfg['name']
-                    node.cmd(f'ip link set {tun} master {bridge_name} 2>/dev/null || true')
-                    tun_added.append(tun)
-            if tun_added:
-                info(f' + tunnels: {", ".join(tun_added)}')
-            info('\n')
+            # Add tất cả GRE tunnels của PE này vào bridge
+            tun_list = pe_tunnels.get(pe_name, [])
+            for tun in tun_list:
+                node.cmd(f'ip link set {tun} master {bridge_name} '
+                         f'2>/dev/null || true')
+
+            info(f'        [{pe_name}] Bridge {bridge_name}: '
+                 f'AC={ac_intf}, tunnels=[{", ".join(tun_list)}]\n')
 
         info('        VPLS bridge setup hoàn tất\n')
 
@@ -309,27 +322,50 @@ class StaticMPLSManager:
     # Verification
     # ------------------------------------------------------------------
     def verify_mpls(self):
-        """Hiển thị MPLS label table trên mỗi router."""
+        """Hiển thị MPLS label table trên P routers và MPLS encap routes trên PE."""
         info('\n*** [StaticMPLS] === MPLS Label Verification ===\n')
-        for rname in ['p01', 'p02', 'p03', 'p04', 'pe01', 'pe02', 'pe03']:
+
+        # P routers: hiển thị MPLS label table (swap/php entries)
+        for rname in ['p01', 'p02', 'p03', 'p04']:
             node = self.net.get(rname)
             if not node:
                 continue
             result = node.cmd('ip -M route 2>/dev/null')
             lines = [l for l in result.strip().split('\n') if l.strip()]
-            info(f'  [{rname}] MPLS routes: {len(lines)} entries\n')
-            for line in lines[:5]:
+            info(f'  [{rname}] MPLS label table: {len(lines)} entries\n')
+            for line in lines:
+                info(f'    {line}\n')
+
+        # PE routers: hiển thị MPLS encap routes (push entries)
+        for rname in ['pe01', 'pe02', 'pe03']:
+            node = self.net.get(rname)
+            if not node:
+                continue
+            result = node.cmd('ip route show 2>/dev/null | grep mpls')
+            lines = [l for l in result.strip().split('\n') if l.strip()]
+            info(f'  [{rname}] MPLS push routes: {len(lines)} entries\n')
+            for line in lines:
                 info(f'    {line}\n')
 
     def verify_vpls(self):
-        """Hiển thị VPLS bridge status."""
+        """Hiển thị VPLS bridge và GRE tunnel status."""
         info('\n*** [StaticMPLS] === VPLS Bridge Verification ===\n')
         for rname in ['pe01', 'pe02', 'pe03']:
             node = self.net.get(rname)
             if not node:
                 continue
-            result = node.cmd('bridge link show 2>/dev/null || brctl show 2>/dev/null')
-            info(f'  [{rname}] Bridge:\n')
-            for line in result.strip().split('\n')[:5]:
+
+            # Hiển thị bridge members
+            br_output = node.cmd('brctl show vpls-br 2>/dev/null || '
+                                 'bridge link show 2>/dev/null')
+            info(f'  [{rname}] Bridge vpls-br:\n')
+            for line in br_output.strip().split('\n'):
                 if line.strip():
                     info(f'    {line}\n')
+
+            # Hiển thị GRE tunnel interfaces
+            gre_output = node.cmd('ip tunnel show 2>/dev/null | grep gre')
+            if gre_output.strip():
+                for line in gre_output.strip().split('\n'):
+                    if line.strip():
+                        info(f'    [tunnel] {line}\n')
