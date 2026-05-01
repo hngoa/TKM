@@ -230,13 +230,31 @@ class FRRManager:
                 f'-z {sock} '
                 f'2>/dev/null'
             )
+        # Đợi daemons khởi tạo
+        time.sleep(1.0)
 
         # Xác nhận zebra socket đã tạo
         check = node.cmd(f'ls {sock} 2>/dev/null')
         if sock in check or check.strip() == sock.strip():
-            info(f"     [OK] FRR daemons started on {node_name} (sock={sock})\n")
+            info(f"     [OK] FRR zebra socket ready on {node_name} (sock={sock})\n")
         else:
             warn(f"     [WARN] {node_name}: zebra socket chưa xuất hiện tại {sock}\n")
+            # Thử kiểm tra lỗi zebra
+            err_output = node.cmd(
+                f'/usr/lib/frr/zebra -f {conf_file} -z {sock} 2>&1 || true'
+            )
+            if err_output.strip():
+                warn(f"     [DEBUG] zebra stderr: {err_output.strip()}\n")
+
+        # Kiểm tra daemon processes thực sự đang chạy
+        procs = node.cmd('ps aux 2>/dev/null | grep -E "(zebra|ospfd|ldpd|bgpd)" | grep -v grep')
+        running = []
+        for daemon in ['zebra', 'ospfd', 'ldpd', 'bgpd']:
+            if daemon in procs:
+                running.append(daemon)
+        info(f"     [INFO] Daemons running on {node_name}: {', '.join(running) if running else 'NONE'}\n")
+        if 'zebra' not in running:
+            warn(f"     [ERROR] zebra FAILED to start on {node_name}!\n")
         return True
 
     # ------------------------------------------------------------------

@@ -182,29 +182,46 @@ def run_backbone_tests(net, tester):
     return reports
 
 
-def run_frr_verification(net):
+def run_frr_verification(net, frr_mgr=None):
     """
     Test 4: Kiểm tra FRR protocol state.
-    Chạy vtysh commands để verify OSPF/LDP/BGP.
+    Dùng per-node socket (nếu có) để chạy vtysh commands.
     """
     info('\n*** [Test 4] FRR Protocol Verification\n')
     info('    (Kiểm tra OSPF neighbors, LDP sessions, BGP state)\n')
 
-    frr_mgr = FRRManager(net)
+    if frr_mgr is None:
+        frr_mgr = FRRManager(net)
     if not frr_mgr.frr_available:
         warn('    [SKIP] FRR không khả dụng trên hệ thống này\n')
         return
 
+    all_routers = ['p01', 'p02', 'p03', 'p04', 'pe01', 'pe02', 'pe03']
+
+    # [4-pre] Kiểm tra FRR daemons thực sự chạy
+    info('\n  [4-pre] FRR Daemon Process Check:\n')
+    for rname in all_routers:
+        node = net.get(rname)
+        if node is None:
+            continue
+        procs = node.cmd('ps aux 2>/dev/null | grep -E "(zebra|ospfd|ldpd|bgpd)" | grep -v grep')
+        running = []
+        for daemon in ['zebra', 'ospfd', 'ldpd', 'bgpd']:
+            if daemon in procs:
+                running.append(daemon)
+        if running:
+            info(f'  [{rname}] Running: {", ".join(running)}\n')
+        else:
+            warn(f'  [{rname}] WARNING: Không có FRR daemon nào đang chạy!\n')
+
     # OSPF neighbors
     info('\n  [4a] OSPF Neighbors:\n')
-    all_routers = ['p01', 'p02', 'p03', 'p04', 'pe01', 'pe02', 'pe03']
     ospf_ok = True
     for rname in all_routers:
         node = net.get(rname)
         if node is None:
             continue
-        result = node.cmd('vtysh -c "show ip ospf neighbor" 2>/dev/null '
-                          '|| echo "OSPF daemon not running"')
+        result = frr_mgr._vtysh(node, rname, 'show ip ospf neighbor')
         full_count = result.count('Full')
         info(f'  [{rname}] Full neighbors: {full_count}\n')
         for line in result.strip().split('\n'):
@@ -216,12 +233,11 @@ def run_frr_verification(net):
 
     # LDP sessions
     info('\n  [4b] LDP Sessions:\n')
-    for rname in ['p01', 'p02', 'p03', 'p04', 'pe01', 'pe02', 'pe03']:
+    for rname in all_routers:
         node = net.get(rname)
         if node is None:
             continue
-        result = node.cmd('vtysh -c "show mpls ldp neighbor" 2>/dev/null '
-                          '|| echo "LDP daemon not running"')
+        result = frr_mgr._vtysh(node, rname, 'show mpls ldp neighbor')
         info(f'  [{rname}] LDP:\n')
         for line in result.strip().split('\n')[:4]:
             if line.strip():
@@ -233,11 +249,9 @@ def run_frr_verification(net):
         node = net.get(rname)
         if node is None:
             continue
-        result = node.cmd(
-            'vtysh -c "show bgp l2vpn evpn summary" 2>/dev/null || '
-            'vtysh -c "show bgp summary" 2>/dev/null || '
-            'echo "BGP not running"'
-        )
+        result = frr_mgr._vtysh(node, rname, 'show bgp l2vpn evpn summary')
+        if 'not running' in result.lower() or 'vtysh' in result.lower():
+            result = frr_mgr._vtysh(node, rname, 'show bgp summary')
         established = result.count('Established')
         info(f'  [{rname}] BGP Established sessions: {established}\n')
         for line in result.strip().split('\n'):
@@ -288,9 +302,10 @@ def run(interactive=True, use_frr=True, save_report=True):
 
         # ---- Phase 0a: Apply IP Config ----
         info('\n*** [Phase 0a] Áp dụng cấu hình IP backbone\n')
-        backbone_loader.apply_all(net)
+        backbone_loader.apply_all(net, skip_routes=use_frr)
 
         # ---- Phase 0b: Deploy FRR (OSPF + LDP + BGP) ----
+        frr_mgr = None
         if use_frr:
             info('\n*** [Phase 0b] Triển khai FRR (OSPF + LDP + BGP)\n')
             frr_mgr = FRRManager(net)
@@ -299,7 +314,8 @@ def run(interactive=True, use_frr=True, save_report=True):
                 info('\n*** Chờ OSPF + LDP hội tụ (30 giây)...\n')
                 frr_mgr.wait_convergence(timeout=30)
             else:
-                warn('[!] FRR không khả dụng — đã áp dụng static routes fallback từ YAML\n')
+                warn('[!] FRR không khả dụng — áp dụng static routes fallback từ YAML\n')
+                backbone_loader.apply_all(net, skip_routes=False)
         else:
             info('\n*** [Phase 0b] Bỏ qua FRR (Sử dụng Static Routes từ YAML)\n')
 
@@ -333,7 +349,7 @@ def run(interactive=True, use_frr=True, save_report=True):
 
         # ---- Phase 0d: FRR Verification (nếu dùng FRR) ----
         if use_frr:
-            run_frr_verification(net)
+            run_frr_verification(net, frr_mgr=frr_mgr)
 
         # Save reports
         if save_report:

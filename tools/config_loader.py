@@ -276,12 +276,20 @@ class BackboneConfigLoader:
         with open(self.yaml_path, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
 
-    def apply_all(self, net):
-        """Apply IP config cho tất cả P và PE routers."""
+    def apply_all(self, net, skip_routes=False):
+        """
+        Apply IP config cho tất cả P và PE routers.
+
+        Args:
+            net: Mininet network object
+            skip_routes: Nếu True, bỏ qua static routes (khi FRR quản lý routing)
+        """
         info('\n*** [BackboneLoader] Cấu hình IP cho MPLS Backbone\n')
+        if skip_routes:
+            info('    [INFO] skip_routes=True — Bỏ qua static routes (FRR sẽ quản lý)\n')
         self._apply_loopbacks(net)
-        self._apply_p_router_interfaces(net)
-        self._apply_pe_router_interfaces(net)
+        self._apply_p_router_interfaces(net, skip_routes)
+        self._apply_pe_router_interfaces(net, skip_routes)
         self._apply_ce_wan_interfaces(net)
         info('*** [BackboneLoader] Backbone IP config hoàn tất\n')
 
@@ -316,7 +324,7 @@ class BackboneConfigLoader:
             node.cmd(f'sysctl -w net.mpls.conf.lo.input=1 2>/dev/null || true')
             info(f"     {name} lo: {lo}\n")
 
-    def _apply_p_router_interfaces(self, net):
+    def _apply_p_router_interfaces(self, net, skip_routes=False):
         """Apply IP config và static routes cho P-Routers."""
         info('  [*] Cấu hình P-Router interfaces & routes\n')
         for router in self.config.get('p_routers', []):
@@ -340,7 +348,10 @@ class BackboneConfigLoader:
                 node.cmd(f'echo 1 > /proc/sys/net/mpls/conf/{intf_name}/input 2>/dev/null || true')
                 info(f"     {name} {intf_name}: {intf_ip}\n")
 
-            # Cấu hình static routes (nếu có)
+            # Cấu hình static routes (nếu có) — bỏ qua khi FRR quản lý
+            if skip_routes:
+                info(f'     {name}: [SKIP] static routes (FRR mode)\n')
+                continue
             for route in router.get('static_routes', []):
                 prefix = route.get('prefix')
                 via    = route.get('via')
@@ -348,7 +359,7 @@ class BackboneConfigLoader:
                     node.cmd(f'ip route add {prefix} via {via} 2>/dev/null || true')
                     info(f"     {name} route: {prefix} via {via}\n")
 
-    def _apply_pe_router_interfaces(self, net):
+    def _apply_pe_router_interfaces(self, net, skip_routes=False):
         """Apply IP config và static routes cho PE-Routers."""
         info('  [*] Cấu hình PE-Router interfaces & routes\n')
         for router in self.config.get('pe_routers', []):
@@ -373,7 +384,10 @@ class BackboneConfigLoader:
                     node.cmd(f'echo 1 > /proc/sys/net/mpls/conf/{intf_name}/input 2>/dev/null || true')
                 info(f"     {name} {intf_name}: {intf_ip}\n")
 
-            # Cấu hình static routes (nếu có)
+            # Cấu hình static routes (nếu có) — bỏ qua khi FRR quản lý
+            if skip_routes:
+                info(f'     {name}: [SKIP] static routes (FRR mode)\n')
+                continue
             for route in router.get('static_routes', []):
                 prefix = route.get('prefix')
                 via    = route.get('via')
