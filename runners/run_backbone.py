@@ -65,6 +65,7 @@ from mininet.cli import CLI
 from node_types import MPLSRouter
 from config_loader import BackboneConfigLoader
 from frr_manager import FRRManager
+from static_mpls import StaticMPLSManager
 from connectivity_test import ConnectivityTest, TestReport, TestResult
 
 # --- Topology builder ---
@@ -284,7 +285,7 @@ def run_frr_verification(net, frr_mgr=None):
 # ----------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------
-def run(interactive=True, use_frr=True, save_report=True):
+def run(interactive=True, use_frr=False, save_report=True):
     setLogLevel('info')
 
     # Load backbone config
@@ -302,22 +303,33 @@ def run(interactive=True, use_frr=True, save_report=True):
 
         # ---- Phase 0a: Apply IP Config ----
         info('\n*** [Phase 0a] Áp dụng cấu hình IP backbone\n')
+        # Khi dùng static MPLS: cần static routes cho IP reachability
+        # Khi dùng FRR: OSPF sẽ quản lý routes
         backbone_loader.apply_all(net, skip_routes=use_frr)
 
-        # ---- Phase 0b: Deploy FRR (OSPF + LDP + BGP) ----
+        # ---- Phase 0b: Deploy MPLS ----
         frr_mgr = None
+        mpls_mgr = None
+
         if use_frr:
-            info('\n*** [Phase 0b] Triển khai FRR (OSPF + LDP + BGP)\n')
+            # FRR Daemons mode (experimental)
+            info('\n*** [Phase 0b] Triển khai FRR Daemons (experimental)\n')
             frr_mgr = FRRManager(net)
             if frr_mgr.frr_available:
                 frr_mgr.deploy_backbone()
                 info('\n*** Chờ OSPF + LDP hội tụ (30 giây)...\n')
                 frr_mgr.wait_convergence(timeout=30)
             else:
-                warn('[!] FRR không khả dụng — áp dụng static routes fallback từ YAML\n')
+                warn('[!] FRR không khả dụng — fallback về Static MPLS\n')
                 backbone_loader.apply_all(net, skip_routes=False)
+                mpls_mgr = StaticMPLSManager(net)
+                mpls_mgr.deploy_all()
         else:
-            info('\n*** [Phase 0b] Bỏ qua FRR (Sử dụng Static Routes từ YAML)\n')
+            # Static MPLS mode (default — reliable)
+            info('\n*** [Phase 0b] Triển khai Static MPLS + GRE VPLS\n')
+            info('    (Static routes + MPLS labels + GRE pseudowires)\n')
+            mpls_mgr = StaticMPLSManager(net)
+            mpls_mgr.deploy_all()
 
         # ---- Phase 0c: Connectivity Tests ----
         info('\n*** [Phase 0c] Chạy Backbone Connectivity Tests\n')
@@ -342,14 +354,15 @@ def run(interactive=True, use_frr=True, save_report=True):
             info('     Bước tiếp: sudo python3 runners/run_branch1.py --test\n')
         elif total_pass >= total_all * 0.7:
             warn('  ⚠  Backbone cơ bản hoạt động nhưng còn một số lỗi.\n')
-            warn('     Kiểm tra routing/FRR trước khi chạy full MPLS.\n')
         else:
             warn('  ✗  BACKBONE CÓ VẤN ĐỀ NGHIÊM TRỌNG!\n')
-            warn('     KHÔNG nên chạy run_full_mpls.py cho đến khi sửa.\n')
 
-        # ---- Phase 0d: FRR Verification (nếu dùng FRR) ----
-        if use_frr:
+        # ---- Phase 0d: MPLS/FRR Verification ----
+        if use_frr and frr_mgr:
             run_frr_verification(net, frr_mgr=frr_mgr)
+        elif mpls_mgr:
+            mpls_mgr.verify_mpls()
+            mpls_mgr.verify_vpls()
 
         # Save reports
         if save_report:
@@ -358,11 +371,10 @@ def run(interactive=True, use_frr=True, save_report=True):
         # CLI
         if interactive:
             info('\n*** Entering Mininet CLI (ISP Backbone)\n')
-            info('*** Debug OSPF: pe01 vtysh -c "show ip ospf neighbor"\n')
-            info('*** Debug LDP:  p01  vtysh -c "show mpls ldp neighbor"\n')
-            info('*** Debug BGP:  pe01 vtysh -c "show bgp l2vpn evpn summary"\n')
-            info('*** Ping test:  pe01 ping 10.0.0.12  (PE01->PE02 loopback)\n')
-            info('*** MPLS:       p01  ip -M route\n')
+            info('*** MPLS labels:  p01  ip -M route\n')
+            info('*** VPLS bridge:  pe01 bridge link show\n')
+            info('*** Ping PE:      pe01 ping 10.0.0.12\n')
+            info('*** Traceroute:   pe01 traceroute -n 10.0.0.13\n')
             CLI(net)
 
     finally:
@@ -391,8 +403,12 @@ Quy trình kiểm tra đề xuất:
         help='Chỉ chạy auto test, không mở CLI'
     )
     parser.add_argument(
+        '--frr', action='store_true',
+        help='Dùng FRR daemons (OSPF+LDP+BGP) thay vì Static MPLS'
+    )
+    parser.add_argument(
         '--no-frr', action='store_true',
-        help='Dùng static routes thay vì FRR (để debug IP layer trước)'
+        help='[Legacy] Giống mặc định (Static MPLS)'
     )
     parser.add_argument(
         '--no-report', action='store_true',
@@ -402,6 +418,6 @@ Quy trình kiểm tra đề xuất:
 
     run(
         interactive=not args.test,
-        use_frr=not args.no_frr,
+        use_frr=args.frr,
         save_report=not args.no_report,
     )
