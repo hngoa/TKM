@@ -77,7 +77,7 @@ class FRRManager:
         """
         self.net = net
         self.configs_root = configs_root or PROJECT_ROOT
-        self._node_sock = {}  # node_name -> socket path (dùng cho vtysh)
+        self._node_run_dir = {}  # node_name -> per-node runtime directory
         self._check_frr_installed()
 
     def _check_frr_installed(self):
@@ -97,6 +97,60 @@ class FRRManager:
                 return
         self.frr_available = True
         info("[FRRManager] FRR detected OK\n")
+
+    # ------------------------------------------------------------------
+    # Pre-deployment: Stop host FRR + Load MPLS modules
+    # ------------------------------------------------------------------
+
+    def _stop_host_frr(self):
+        """
+        Dừng FRR service của host và kill tất cả FRR processes còn sót.
+
+        Tại sao cần:
+          Mininet nodes chia sẻ PID namespace với host.
+          Nếu host FRR đang chạy, per-node daemons sẽ bị conflict:
+          - Socket paths bị chiếm bởi host zebra
+          - ps aux hiển thị host daemons, gây nhầm lẫn
+          - vtysh kết nối vào host daemon thay vì per-node daemon
+        """
+        info('  [*] Dừng host FRR service (tránh conflict với per-node daemons)...\n')
+        subprocess.run(['systemctl', 'stop', 'frr'], capture_output=True)
+        time.sleep(0.5)
+
+        # Kill mọi FRR process còn sót lại
+        for daemon in ['zebra', 'ospfd', 'ldpd', 'bgpd', 'staticd', 'bfdd']:
+            subprocess.run(['pkill', '-9', '-f', f'/usr/lib/frr/{daemon}'],
+                           capture_output=True)
+        time.sleep(0.5)
+
+        # Xoá stale socket/pid files
+        subprocess.run(['rm', '-f',
+                        '/var/run/frr/zserv.api',
+                        '/var/run/frr/*.pid',
+                        '/var/run/frr/*.vty'],
+                       capture_output=True)
+        info('  [OK] Host FRR đã dừng\n')
+
+    def _load_mpls_modules(self):
+        """
+        Load MPLS kernel modules (cần cho LDP label switching).
+
+        Modules:
+          mpls_router    — core MPLS forwarding
+          mpls_iptunnel  — MPLS tunnel encapsulation
+          mpls_gso       — GSO segmentation cho MPLS
+        """
+        info('  [*] Loading MPLS kernel modules...\n')
+        loaded = []
+        for mod in ['mpls_router', 'mpls_iptunnel', 'mpls_gso']:
+            result = subprocess.run(['modprobe', mod], capture_output=True)
+            if result.returncode == 0:
+                loaded.append(mod)
+        if loaded:
+            info(f'  [OK] Loaded: {", ".join(loaded)}\n')
+        else:
+            warn('  [WARN] Không load được MPLS modules — LDP sẽ không hoạt động\n')
+            warn('         Kernel có thể chưa hỗ trợ MPLS (cần kernel >= 4.1)\n')
 
     # ------------------------------------------------------------------
     # Core: Deploy FRR to a single node
@@ -150,8 +204,8 @@ class FRRManager:
         node.cmd(f'mkdir -p {run_dir} /var/log/frr')
         node.cmd(f'chmod 755 {run_dir}')
 
-        # Lưu socket path để verify_* sử dụng sau
-        self._node_sock[node_name] = sock
+        # Lưu run_dir để vtysh sử dụng sau (--vty_socket cần directory)
+        self._node_run_dir[node_name] = run_dir
 
         # Khởi động daemons
         return self._start_frr_daemons(node, node_name, conf_file, run_dir, sock, log_file)
@@ -189,9 +243,13 @@ class FRRManager:
         """
         Khởi động FRR daemons trong network namespace của node.
 
-        Không dùng frrinit.sh vì trong Mininet, host FRR đang chạy khiến
-        frrinit.sh luôn trả về 'success' mà không start per-node daemon.
-        Luôn start từng daemon trực tiếp với per-node paths.
+        Quan trọng:
+          - Phải dùng --vty_socket <run_dir> cho MỌI daemon
+            để VTY sockets (*.vty) nằm trong thư mục per-node,
+            tránh conflict giữa các nodes.
+          - -z <sock> chỉ định zserv API socket (ospfd/ldpd/bgpd
+            kết nối vào zebra qua socket này).
+          - Host FRR phải đã được stop trước (xem _stop_host_frr).
         """
         info(f"     [INFO] Starting FRR daemons for {node_name}...\n")
 
@@ -201,60 +259,84 @@ class FRRManager:
             f'-f {conf_file} '
             f'-i {run_dir}/zebra.pid '
             f'-z {sock} '
+            f'--vty_socket {run_dir} '
+            f'--log file:{log_file} '
             f'2>/dev/null'
         )
-        time.sleep(1.0)  # Đợi zebra bind socket trước
+        time.sleep(1.5)  # Đợi zebra tạo zserv socket
 
+        # Kiểm tra zebra socket ngay sau khi start
+        check = node.cmd(f'ls {sock} 2>/dev/null').strip()
+        if sock not in check and check != sock:
+            warn(f"     [WARN] {node_name}: zebra socket chưa tạo, thử chờ thêm...\n")
+            time.sleep(2.0)
+            check = node.cmd(f'ls {sock} 2>/dev/null').strip()
+            if sock not in check and check != sock:
+                # In lỗi chi tiết
+                err = node.cmd(
+                    f'/usr/lib/frr/zebra '
+                    f'-f {conf_file} -z {sock} --vty_socket {run_dir} '
+                    f'2>&1; echo EXIT_CODE=$?'
+                )
+                warn(f"     [ERROR] zebra trên {node_name} KHÔNG start được!\n")
+                warn(f"     [DEBUG] {err.strip()}\n")
+                return False
+        info(f"     [OK] zebra ready (sock={sock})\n")
+
+        # OSPF daemon
         node.cmd(
             f'/usr/lib/frr/ospfd -d '
             f'-f {conf_file} '
             f'-i {run_dir}/ospfd.pid '
             f'-z {sock} '
+            f'--vty_socket {run_dir} '
             f'2>/dev/null'
         )
 
+        # LDP daemon (P + PE routers)
         if node_name in P_ROUTERS or node_name in PE_ROUTERS:
             node.cmd(
                 f'/usr/lib/frr/ldpd -d '
                 f'-f {conf_file} '
                 f'-i {run_dir}/ldpd.pid '
                 f'-z {sock} '
+                f'--vty_socket {run_dir} '
                 f'2>/dev/null'
             )
 
+        # BGP daemon (PE routers only)
         if node_name in PE_ROUTERS:
             node.cmd(
                 f'/usr/lib/frr/bgpd -d '
                 f'-f {conf_file} '
                 f'-i {run_dir}/bgpd.pid '
                 f'-z {sock} '
+                f'--vty_socket {run_dir} '
                 f'2>/dev/null'
             )
-        # Đợi daemons khởi tạo
-        time.sleep(1.0)
 
-        # Xác nhận zebra socket đã tạo
-        check = node.cmd(f'ls {sock} 2>/dev/null')
-        if sock in check or check.strip() == sock.strip():
-            info(f"     [OK] FRR zebra socket ready on {node_name} (sock={sock})\n")
-        else:
-            warn(f"     [WARN] {node_name}: zebra socket chưa xuất hiện tại {sock}\n")
-            # Thử kiểm tra lỗi zebra
-            err_output = node.cmd(
-                f'/usr/lib/frr/zebra -f {conf_file} -z {sock} 2>&1 || true'
-            )
-            if err_output.strip():
-                warn(f"     [DEBUG] zebra stderr: {err_output.strip()}\n")
+        time.sleep(0.5)
 
-        # Kiểm tra daemon processes thực sự đang chạy
-        procs = node.cmd('ps aux 2>/dev/null | grep -E "(zebra|ospfd|ldpd|bgpd)" | grep -v grep')
+        # Verify bằng PID files (chính xác hơn ps aux vì PID namespace shared)
+        expected = ['zebra', 'ospfd']
+        if node_name in P_ROUTERS or node_name in PE_ROUTERS:
+            expected.append('ldpd')
+        if node_name in PE_ROUTERS:
+            expected.append('bgpd')
+
         running = []
-        for daemon in ['zebra', 'ospfd', 'ldpd', 'bgpd']:
-            if daemon in procs:
-                running.append(daemon)
-        info(f"     [INFO] Daemons running on {node_name}: {', '.join(running) if running else 'NONE'}\n")
-        if 'zebra' not in running:
-            warn(f"     [ERROR] zebra FAILED to start on {node_name}!\n")
+        for daemon in expected:
+            pid_file = f'{run_dir}/{daemon}.pid'
+            pid = node.cmd(f'cat {pid_file} 2>/dev/null').strip()
+            if pid and pid.isdigit():
+                alive = node.cmd(f'kill -0 {pid} 2>&1; echo $?').strip()
+                if alive.endswith('0'):
+                    running.append(daemon)
+        info(f"     [INFO] Daemons verified on {node_name}: {', '.join(running)}\n")
+
+        missing = set(expected) - set(running)
+        if missing:
+            warn(f"     [WARN] {node_name}: missing daemons: {', '.join(missing)}\n")
         return True
 
     # ------------------------------------------------------------------
@@ -264,6 +346,10 @@ class FRRManager:
     def deploy_backbone(self):
         """Deploy FRR cho tất cả P và PE routers trong backbone."""
         info('\n*** [FRRManager] === Triển khai FRR Backbone ===\n')
+
+        # Bước 0: Dọn dẹp host FRR + Load MPLS modules
+        self._stop_host_frr()
+        self._load_mpls_modules()
 
         # Deploy P-Routers trước
         info('  [*] P-Routers (OSPF + LDP):\n')
@@ -383,16 +469,22 @@ class FRRManager:
         info('*** [FRRManager] Done waiting\n')
 
     def _vtysh(self, node, node_name, cmd):
-        """Chạy vtysh command trên node, dùng per-node socket nếu có."""
-        sock = self._node_sock.get(node_name)
-        if sock:
-            # Thử --vty_socket (long form), rồi fallback về default socket
+        """
+        Chạy vtysh command trên node, dùng per-node VTY socket directory.
+
+        --vty_socket nhận DIRECTORY (không phải file) chứa *.vty sockets.
+        Các daemon đã tạo VTY sockets tại run_dir nhờ --vty_socket khi start.
+        """
+        run_dir = self._node_run_dir.get(node_name)
+        if run_dir:
             result = node.cmd(
-                f'vtysh --vty_socket {sock} -c "{cmd}" 2>/dev/null'
+                f'vtysh --vty_socket {run_dir} -c "{cmd}" 2>/dev/null'
             )
-            if 'unrecognized option' not in result and 'invalid option' not in result:
+            if ('unrecognized option' not in result
+                    and 'invalid option' not in result
+                    and result.strip()):
                 return result
-            # FRR version không hỗ trợ --vty_socket: fallback dùng ip route
+        # Fallback: vtysh mặc định (khi không có per-node socket)
         return node.cmd(f'vtysh -c "{cmd}" 2>/dev/null || echo "vtysh_fallback"')
 
     def verify_ospf(self, router_names=None):
