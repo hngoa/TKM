@@ -364,7 +364,13 @@ class StaticMPLSManager:
         count = 0
         for pe_name, pe_info in pe_branch.items():
             pe_node = self.net.get(pe_name)
-            ce_node = self.net.get(pe_info['ce'])
+            if not pe_node:
+                continue
+            # CE node chỉ tồn tại trong full topology, không có trong backbone-only
+            try:
+                ce_node = self.net.get(pe_info['ce'])
+            except KeyError:
+                ce_node = None
             local_branch = pe_info['branch']
 
             # Tìm các remote branches và subnets của chúng
