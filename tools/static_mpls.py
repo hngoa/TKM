@@ -120,13 +120,14 @@ class StaticMPLSManager:
     # Main entry point
     # ------------------------------------------------------------------
     def deploy_all(self):
-        """Deploy đầy đủ: MPLS labels + GRE VPLS + inter-branch routes."""
+        """Deploy đầy đủ: MPLS labels + GRETAP VPLS + inter-branch routes."""
         info('\n*** [StaticMPLS] === Triển khai Static MPLS + GRE VPLS ===\n')
         self._load_mpls_modules()
         self._enable_mpls_interfaces()
         self._setup_mpls_labels()
         self._setup_gre_vpls()
         self._setup_inter_branch_routes()
+        self._warmup_connectivity()
         info('*** [StaticMPLS] Deployment hoàn tất\n')
 
     # ------------------------------------------------------------------
@@ -234,34 +235,42 @@ class StaticMPLSManager:
     # ------------------------------------------------------------------
     def _setup_gre_vpls(self):
         """
-        Thiết lập VPLS bằng GRE tunnels + Linux bridge.
+        Thiết lập VPLS bằng GRETAP tunnels + Linux bridge.
 
-        Quan trọng: Tạo tunnel 2 CHIỀU cho mỗi cặp PE.
-        YAML chỉ define 1 chiều (pe01→pe02), code tự tạo chiều ngược (pe02→pe01).
+        Quan trọng:
+          - Tạo tunnel 2 CHIỀU cho mỗi cặp PE
+          - KHÔNG add AC interface (pe-ce) vào bridge — giữ L3 IP cho routing
+          - Bridge chỉ chứa GRETAP tunnels (L2 pseudowire demonstration)
 
         Mô hình:
-          PE01: bridge vpls-br = [pe01-ce01] + [gre-pe01-pe02] + [gre-pe01-pe03]
-          PE02: bridge vpls-br = [pe02-ce02] + [gre-pe02-pe01] + [gre-pe02-pe03]
-          PE03: bridge vpls-br = [pe03-ce03] + [gre-pe03-pe01] + [gre-pe03-pe02]
+          PE01: bridge vpls-br = [gre-pe01-pe02] + [gre-pe01-pe03]
+          PE02: bridge vpls-br = [gre-pe02-pe01] + [gre-pe02-pe03]
+          PE03: bridge vpls-br = [gre-pe03-pe01] + [gre-pe03-pe02]
+
+        Lý do không add AC:
+          Khi interface được add vào bridge, Linux xóa IP của nó.
+          VD: pe01-ce01 (10.100.1.1/30) mất IP → PE01 mất kết nối CE01 →
+          tất cả inter-branch routes 'via 10.100.x.2' bị broken.
+          Inter-branch connectivity dùng L3 routing với MPLS encap thay vì L2.
         """
         fallback = self.vpls_config.get('linux_vpls_fallback', {})
         if not fallback.get('enabled', False):
             info('  [4/4] VPLS fallback disabled trong config, bỏ qua\n')
             return
 
-        info('  [4/4] Thiết lập GRE VPLS (pseudowire emulation)...\n')
+        info('  [4/4] Thiết lập GRETAP VPLS (pseudowire emulation)...\n')
         bridge_name = fallback.get('bridge_name', 'vpls-br')
         tunnels = fallback.get('tunnels', [])
 
-        # Member map: PE → AC interface
+        # Member map: PE → AC interface (for reference/logging only)
         member_map = {}
         for m in self.vpls_config.get('members', []):
             member_map[m['pe']] = m['ac_interface']
 
         # Theo dõi tunnel names đã tạo trên mỗi PE
-        pe_tunnels = {pe: [] for pe in member_map}  # pe_name -> [tun_name, ...]
+        pe_tunnels = {pe: [] for pe in member_map}
 
-        # Tạo GRE tunnels (cả 2 chiều)
+        # Tạo GRETAP tunnels (cả 2 chiều)
         for tcfg in tunnels:
             local_pe = tcfg['local_pe']
             remote_pe = tcfg['remote_pe']
@@ -278,7 +287,7 @@ class StaticMPLSManager:
                          f'key {gre_key} 2>/dev/null || true')
                 node.cmd(f'ip link set {tun_name} up')
                 pe_tunnels.setdefault(local_pe, []).append(tun_name)
-                info(f'        [{local_pe}] GRE: {tun_name} '
+                info(f'        [{local_pe}] GRETAP: {tun_name} '
                      f'({local_ip} → {remote_ip}, key={gre_key})\n')
 
             # Chiều ngược: remote_pe → local_pe
@@ -290,11 +299,11 @@ class StaticMPLSManager:
                              f'key {gre_key} 2>/dev/null || true')
                 node_rev.cmd(f'ip link set {rev_name} up')
                 pe_tunnels.setdefault(remote_pe, []).append(rev_name)
-                info(f'        [{remote_pe}] GRE: {rev_name} '
+                info(f'        [{remote_pe}] GRETAP: {rev_name} '
                      f'({remote_ip} → {local_ip}, key={gre_key})\n')
 
-        # Tạo bridge + add interfaces trên mỗi PE
-        for pe_name, ac_intf in member_map.items():
+        # Tạo bridge + add chỉ GRETAP tunnels (KHÔNG add AC interface)
+        for pe_name in member_map:
             node = self.net.get(pe_name)
             if not node:
                 continue
@@ -304,18 +313,16 @@ class StaticMPLSManager:
                      f'2>/dev/null || true')
             node.cmd(f'ip link set {bridge_name} up')
 
-            # Add AC interface
-            node.cmd(f'ip link set {ac_intf} master {bridge_name} '
-                     f'2>/dev/null || true')
-
-            # Add tất cả GRE tunnels của PE này vào bridge
+            # Add GRETAP tunnels vào bridge (KHÔNG add AC!)
             tun_list = pe_tunnels.get(pe_name, [])
             for tun in tun_list:
                 node.cmd(f'ip link set {tun} master {bridge_name} '
                          f'2>/dev/null || true')
 
+            ac_intf = member_map.get(pe_name, 'N/A')
             info(f'        [{pe_name}] Bridge {bridge_name}: '
-                 f'AC={ac_intf}, tunnels=[{", ".join(tun_list)}]\n')
+                 f'tunnels=[{", ".join(tun_list)}] '
+                 f'(AC={ac_intf} giữ L3 cho routing)\n')
 
         info('        VPLS bridge setup hoàn tất\n')
 
@@ -412,6 +419,48 @@ class StaticMPLSManager:
                         count += 1
 
         info(f'        Tổng: {count} inter-branch routes đã cài đặt\n')
+
+    # ------------------------------------------------------------------
+    # Step 6: ARP warmup
+    # ------------------------------------------------------------------
+    def _warmup_connectivity(self):
+        """
+        Gửi 1 ping đến các neighbor trực tiếp để populate ARP table.
+
+        Trong full topology với 40+ interfaces, ARP cache trống gây ra
+        packet loss 80-100% ở các ping test đầu tiên. Warmup giải quyết
+        bằng cách trigger ARP resolution trước khi chạy test.
+        """
+        import time
+        info('  [6/6] Warmup ARP caches...\n')
+
+        # P-P direct links warmup
+        warmup_pairs = [
+            ('p01', '10.0.10.2'),  ('p02', '10.0.10.1'),
+            ('p02', '10.0.11.2'),  ('p03', '10.0.11.1'),
+            ('p03', '10.0.12.2'),  ('p04', '10.0.12.1'),
+            ('p01', '10.0.13.2'),  ('p03', '10.0.13.1'),
+            ('p02', '10.0.14.2'),  ('p04', '10.0.14.1'),
+            # PE-P links
+            ('pe01', '10.0.20.2'), ('p01', '10.0.20.1'),
+            ('pe01', '10.0.21.2'), ('p02', '10.0.21.1'),
+            ('pe02', '10.0.22.2'), ('p02', '10.0.22.1'),
+            ('pe02', '10.0.23.2'), ('p03', '10.0.23.1'),
+            ('pe03', '10.0.24.2'), ('p03', '10.0.24.1'),
+            ('pe03', '10.0.25.2'), ('p04', '10.0.25.1'),
+            # PE-CE WAN links
+            ('pe01', '10.100.1.2'), ('pe02', '10.100.2.2'),
+            ('pe03', '10.100.3.2'),
+        ]
+
+        for node_name, target_ip in warmup_pairs:
+            node = self.net.get(node_name)
+            if node:
+                node.cmd(f'ping -c 1 -W 1 {target_ip} > /dev/null 2>&1 &')
+
+        # Đợi ARP resolution hoàn thành
+        time.sleep(3)
+        info('        ARP warmup hoàn tất\n')
 
     # ------------------------------------------------------------------
     # Verification
