@@ -120,12 +120,13 @@ class StaticMPLSManager:
     # Main entry point
     # ------------------------------------------------------------------
     def deploy_all(self):
-        """Deploy đầy đủ: MPLS labels + GRE VPLS."""
+        """Deploy đầy đủ: MPLS labels + GRE VPLS + inter-branch routes."""
         info('\n*** [StaticMPLS] === Triển khai Static MPLS + GRE VPLS ===\n')
         self._load_mpls_modules()
         self._enable_mpls_interfaces()
         self._setup_mpls_labels()
         self._setup_gre_vpls()
+        self._setup_inter_branch_routes()
         info('*** [StaticMPLS] Deployment hoàn tất\n')
 
     # ------------------------------------------------------------------
@@ -272,7 +273,7 @@ class StaticMPLSManager:
             # Chiều thuận: local_pe → remote_pe
             node = self.net.get(local_pe)
             if node:
-                node.cmd(f'ip tunnel add {tun_name} mode gre '
+                node.cmd(f'ip link add {tun_name} type gretap '
                          f'local {local_ip} remote {remote_ip} '
                          f'key {gre_key} 2>/dev/null || true')
                 node.cmd(f'ip link set {tun_name} up')
@@ -284,7 +285,7 @@ class StaticMPLSManager:
             rev_name = f'gre-{remote_pe}-{local_pe}'
             node_rev = self.net.get(remote_pe)
             if node_rev:
-                node_rev.cmd(f'ip tunnel add {rev_name} mode gre '
+                node_rev.cmd(f'ip link add {rev_name} type gretap '
                              f'local {remote_ip} remote {local_ip} '
                              f'key {gre_key} 2>/dev/null || true')
                 node_rev.cmd(f'ip link set {rev_name} up')
@@ -319,6 +320,100 @@ class StaticMPLSManager:
         info('        VPLS bridge setup hoàn tất\n')
 
     # ------------------------------------------------------------------
+    # Step 5: Inter-branch L3 routes
+    # ------------------------------------------------------------------
+    def _setup_inter_branch_routes(self):
+        """
+        Cài đặt routes liên chi nhánh qua MPLS backbone.
+
+        Trả lời câu hỏi: pc01 (10.1.0.11) làm sao ping được lab01 (10.2.10.11)?
+
+        Chuỗi routing:
+          pc01 → CE01 → PE01 →[MPLS label 112]→ P02 →[PHP]→ PE02 → CE02 → lab01
+
+        Cần 3 loại routes:
+          1. PE routes: remote branch subnets → encap mpls → backbone
+          2. PE return: local branch subnets → via CE (plain IP)
+          3. CE routes: remote branch subnets → via PE
+        """
+        routing = self.vpls_config.get('inter_branch_routing', {})
+        prefixes = routing.get('advertised_prefixes', {})
+        if not prefixes:
+            info('  [5/5] Không có inter_branch_routing trong config, bỏ qua\n')
+            return
+
+        info('  [5/5] Cài đặt inter-branch L3 routes...\n')
+
+        # PE → branch mapping
+        pe_branch = {
+            'pe01': {'ce': 'ce01', 'ce_ip': '10.100.1.2', 'pe_ip': '10.100.1.1',
+                     'branch': 'branch1'},
+            'pe02': {'ce': 'ce02', 'ce_ip': '10.100.2.2', 'pe_ip': '10.100.2.1',
+                     'branch': 'branch2'},
+            'pe03': {'ce': 'ce03', 'ce_ip': '10.100.3.2', 'pe_ip': '10.100.3.1',
+                     'branch': 'branch3'},
+        }
+
+        count = 0
+        for pe_name, pe_info in pe_branch.items():
+            pe_node = self.net.get(pe_name)
+            ce_node = self.net.get(pe_info['ce'])
+            local_branch = pe_info['branch']
+
+            # Tìm các remote branches và subnets của chúng
+            for branch_id, subnets in prefixes.items():
+                if branch_id == local_branch:
+                    # Local branch: PE → CE (return path, plain IP)
+                    if pe_node:
+                        for subnet in subnets:
+                            pe_node.cmd(
+                                f'ip route replace {subnet} '
+                                f'via {pe_info["ce_ip"]} 2>/dev/null')
+                            count += 1
+                    continue
+
+                # Remote branch: tìm PE đích
+                remote_pe = None
+                for rpe, rinfo in pe_branch.items():
+                    if rinfo['branch'] == branch_id:
+                        remote_pe = rpe
+                        break
+                if not remote_pe:
+                    continue
+
+                remote_lo = LOOPBACKS.get(remote_pe)
+                if not remote_lo:
+                    continue
+                label = _label_for(remote_lo)
+
+                # Lấy next-hop từ MPLS_PATHS
+                path_info = MPLS_PATHS.get(pe_name, {}).get(remote_lo)
+                if not path_info:
+                    continue
+                next_hop, out_intf, _ = path_info
+
+                # 1) PE: route remote subnet → encap mpls → backbone
+                if pe_node:
+                    for subnet in subnets:
+                        pe_node.cmd(
+                            f'ip route replace {subnet} '
+                            f'encap mpls {label} '
+                            f'via {next_hop} dev {out_intf} 2>/dev/null')
+                        info(f'        [{pe_name}] {subnet} → mpls {label} '
+                             f'via {next_hop}\n')
+                        count += 1
+
+                # 2) CE: route remote subnet → via local PE
+                if ce_node:
+                    for subnet in subnets:
+                        ce_node.cmd(
+                            f'ip route replace {subnet} '
+                            f'via {pe_info["pe_ip"]} 2>/dev/null')
+                        count += 1
+
+        info(f'        Tổng: {count} inter-branch routes đã cài đặt\n')
+
+    # ------------------------------------------------------------------
     # Verification
     # ------------------------------------------------------------------
     def verify_mpls(self):
@@ -348,7 +443,7 @@ class StaticMPLSManager:
                 info(f'    {line}\n')
 
     def verify_vpls(self):
-        """Hiển thị VPLS bridge và GRE tunnel status."""
+        """Hiển thị VPLS bridge và GRETAP tunnel status."""
         info('\n*** [StaticMPLS] === VPLS Bridge Verification ===\n')
         for rname in ['pe01', 'pe02', 'pe03']:
             node = self.net.get(rname)
@@ -363,9 +458,9 @@ class StaticMPLSManager:
                 if line.strip():
                     info(f'    {line}\n')
 
-            # Hiển thị GRE tunnel interfaces
-            gre_output = node.cmd('ip tunnel show 2>/dev/null | grep gre')
+            # Hiển thị GRETAP tunnel interfaces
+            gre_output = node.cmd('ip -d link show type gretap 2>/dev/null')
             if gre_output.strip():
                 for line in gre_output.strip().split('\n'):
-                    if line.strip():
-                        info(f'    [tunnel] {line}\n')
+                    if 'gretap' in line or 'gre-' in line:
+                        info(f'    [gretap] {line.strip()}\n')
